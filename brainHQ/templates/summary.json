@@ -1,0 +1,8 @@
+{
+  "target_sr": 4000,
+  "core_samples": 300,
+  "full_samples": 1200,
+  "core_thr": 0.6,
+  "full_thr": 0.85,
+  "n_detections": 3
+}
