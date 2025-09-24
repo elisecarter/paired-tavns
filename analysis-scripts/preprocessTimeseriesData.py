@@ -3,7 +3,6 @@ import pandas as pd
 import json
 import numpy as np
 import scipy.signal as signal
-from matplotlib import pyplot as plt
 from based_noise_blinks_detection import detect_blinks
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
@@ -521,11 +520,11 @@ def launch_peak_editor(t, ecg, peaks, block_path):
 # ---------------------------
 
 def main():
-    data_dir = "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/pairedStroop/Data"
-    output_dir = "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/pairedStroop/analyzed-data"
-    
-    start_date = 20250501
-    end_date = 20250701
+    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/RawData"
+    output_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/AnalyzedData"
+
+    start_date = 20250701
+    end_date = 20260701
     
     os.makedirs(output_dir, exist_ok=True)
 

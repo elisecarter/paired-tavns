@@ -160,8 +160,8 @@ def extract_features(trial_data, time, signal, thresh=0):
 
 def main():
     today = datetime.datetime.today().strftime('%Y%m%d')
-    data_dir = "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/pairedStroop/Data"
-    output_dir = "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/pairedStroop/analyzed-data"
+    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/RawData"
+    output_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/AnalyzedData/exportedTrials"
     output_dir = os.path.join(output_dir, today)
     
     os.makedirs(output_dir, exist_ok=True)
