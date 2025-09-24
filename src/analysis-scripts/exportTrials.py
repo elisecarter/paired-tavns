@@ -47,12 +47,12 @@ def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=
 
             
             timeseries_data.append(pd.DataFrame({
-                'id': block_cfg.get('participant_ID'),
-                'order': block_cfg.get('order'),
-                'datetime': block_cfg.get('datetime'),
-                'condition': block_cfg.get('condition'),
-                'experiment': block_cfg.get('experiment'),
-                'block': block_cfg.get('block_no'),
+                'id': block_cfg.get('participant_ID') if block_cfg else None,
+                'order': block_cfg.get('order') if block_cfg else None,
+                'datetime': block_cfg.get('datetime') if block_cfg else None,
+                'condition': block_cfg.get('condition') if block_cfg else None,
+                'experiment': block_cfg.get('experiment') if block_cfg else None,
+                'block': block_cfg.get('block_no') if block_cfg else None,
                 'trial': event_df['trial'].iloc[i],
                 'time': rel_time.round(3),
                 'signal_type': sig,
@@ -60,18 +60,20 @@ def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=
                 'value': values.round(3)
             }))
             
-            feature_data.append(pd.DataFrame([{
-                'id': block_cfg.get('participant_ID'),
-                'order': block_cfg.get('order'),
-                'datetime': block_cfg.get('datetime'),
-                'condition': block_cfg.get('condition'),
-                'experiment': block_cfg.get('experiment'),
-                'block': block_cfg.get('block_no'),
+            feature_dict = {
+                'id': block_cfg.get('participant_ID') if block_cfg else None,
+                'order': block_cfg.get('order') if block_cfg else None,
+                'datetime': block_cfg.get('datetime') if block_cfg else None,
+                'condition': block_cfg.get('condition') if block_cfg else None,
+                'experiment': block_cfg.get('experiment') if block_cfg else None,
+                'block': block_cfg.get('block_no') if block_cfg else None,
                 'trial': event_df['trial'].iloc[i],
                 'event': event_str[0].strip(''),
                 'signal_type': sig,
-                **features
-            }]))
+            }
+            if isinstance(features, dict):
+                feature_dict.update(features)
+            feature_data.append(pd.DataFrame([feature_dict]))
 
     return pd.concat(timeseries_data, ignore_index=True), pd.concat(feature_data, ignore_index=True)
 
@@ -160,14 +162,14 @@ def extract_features(trial_data, time, signal, thresh=0):
 
 def main():
     today = datetime.datetime.today().strftime('%Y%m%d')
-    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/RawData"
-    output_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/AnalyzedData/exportedTrials"
+    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/rawData"
+    output_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/AnalyzedData/analyzedData"
     output_dir = os.path.join(output_dir, today)
     
     os.makedirs(output_dir, exist_ok=True)
 
-    start_date = 20250501
-    end_date = 20250701
+    start_date = 20250701
+    end_date = 20250923
     for subject in os.listdir(data_dir):
         subject_path = os.path.join(data_dir, subject)
         if not os.path.isdir(subject_path) or subject.startswith("test"):
@@ -193,6 +195,8 @@ def main():
                     # rename trial column to 'trial' if it exists
                     if 'trial_number' in stroop_trials.columns:
                         stroop_trials.rename(columns={'trial_number': 'trial'}, inplace=True)
+                else:
+                    stroop_trials = None
                 
                 try:
                     block_cfg = json.load(open(os.path.join(block_path, f"{block}_config.json"), 'r'))
@@ -211,7 +215,7 @@ def main():
 
                     df_events = pd.DataFrame({'event': ts_data['Event'].dropna()})
                     # Only filter events for SCWT or StroopSquared experiments
-                    if experiment_type in ['SCWT', 'StroopSquared']:
+                    if experiment_type in ['SCWT', 'StroopSquared', 'PLRT']:
                         # remove cue/stimulus trials that are not proceeded by correct response
                         # Filter events to only those containing "stim", "cue", or "response"
                         df_events = df_events[df_events['event'].str.contains('stim|cue|response', case=False, na=False)]
@@ -245,11 +249,12 @@ def main():
                         # Find indices in ts_data that match the event and are in df_events
                         event_df = df_events[df_events['event'] == event]
                         trial_data = epoch_by_event(ts_data, event, event_df, pre_event_dur=pre, post_event_dur=post, block_cfg=block_cfg)
-                        ts, feat = trial_data
-                        if ts is not None and not ts.empty:
-                            timeseries_data.append(ts)
-                        if feat is not None and not feat.empty:
-                            feature_data.append(feat)
+                        if trial_data is not None:
+                            ts, feat = trial_data
+                            if ts is not None and not ts.empty:
+                                timeseries_data.append(ts)
+                            if feat is not None and not feat.empty:
+                                feature_data.append(feat)
 
                     if timeseries_data:
                         timeseries_df = pd.concat(timeseries_data, ignore_index=True)

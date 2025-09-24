@@ -421,24 +421,24 @@ def compute_full_regression(
                                           use_huber=use_huber, huber_c=huber_c, ridge=ridge)
             return g
 
-        try:
-            res = minimize(
-                fun, theta0,
-                method="Newton-CG",
-                jac=jac,
-                hessp=lambda th, vv: _neg_local_hessp(th, vv, H, x, wloc,
-                                                      use_huber=use_huber, huber_c=huber_c, ridge=ridge),
-                options=dict(maxiter=max_iter, xtol=1e-6, disp=False),
-            )
-            if not res.success:
-                raise RuntimeError("Newton-CG did not converge")
-        except Exception:
-            n_beta = H.shape[1]
-            bnds = [(0.3, 1.8)] + [(None, None)]*(n_beta-1) + [(1e-4, 1e3)]
-            res = minimize(obj, theta0, method="L-BFGS-B", bounds=bnds,
-                           options=dict(maxiter=max_iter))
-            if not res.success:
-                continue
+        # try:
+        #     res = minimize(
+        #         fun, theta0,
+        #         method="Newton-CG",
+        #         jac=jac,
+        #         hessp=lambda th, vv: _neg_local_hessp(th, vv, H, x, wloc,
+        #                                               use_huber=use_huber, huber_c=huber_c, ridge=ridge),
+        #         options=dict(maxiter=max_iter, xtol=1e-6, disp=False),
+        #     )
+        #     if not res.success:
+        #         raise RuntimeError("Newton-CG did not converge")
+        # except Exception:
+        n_beta = H.shape[1]
+        bnds = [(0.3, 1.8)] + [(None, None)]*(n_beta-1) + [(1e-4, 1e3)]
+        res = minimize(obj, theta0, method="L-BFGS-B", bounds=bnds,
+                        options=dict(maxiter=max_iter))
+        if not res.success:
+            continue
 
         theta_last = res.x
         lam = theta_last[-1]

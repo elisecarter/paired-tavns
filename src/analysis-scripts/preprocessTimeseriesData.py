@@ -151,7 +151,7 @@ def preprocess_daq_data(daq_df, channel_info):
                 if peak < half_window or peak > len(ecg) - half_window - 1:
                     continue
                 window = ecg[peak - half_window: peak + half_window + 1].values
-                corrected_peak = peak - half_window + np.argmax(window)
+                corrected_peak = peak - half_window + np.argmax(np.array(window))
                 corrected_peaks.append(corrected_peak)
             corrected_peaks = pd.Series(corrected_peaks).astype(int)
 
@@ -164,7 +164,7 @@ def preprocess_daq_data(daq_df, channel_info):
             # launch editor
             block_path = daq_df['block_path'][0]
             peaks_path = os.path.join(block_path, "corrected_peaks.npy")
-            manual_correction = False
+            manual_correction = True
             if manual_correction:
                 corrected_peaks = launch_peak_editor(t.values, ecg.values, corrected_peaks, block_path)
             elif os.path.exists(peaks_path):
@@ -292,70 +292,71 @@ def preprocess_subject_block(path, block_str, block_cfg):
     # Preprocess data
     print(f"Processing block: {block_str}")
     
-    if block_cfg['record_from_LSL']:
-        if block_cfg['stream_to_LSL']:
-            events_file = os.path.join(path, f"{block_str}_events.csv")
-            if not os.path.exists(events_file):
-                print(f"Events file not found: {events_file}")
-                return None
-            lsl_events = pd.read_csv(events_file)
-        if block_cfg['record_pupil']:
-            pupil_file = os.path.join(path, f"{block_str}_pupil.csv")
-            if not os.path.exists(pupil_file):
-                print(f"Pupil data file not found: {pupil_file}")
-                return None
-            pupil_df = pd.read_csv(pupil_file)
+    pupil_df = None
+    ino_df = None
+    channel_info = None
+    pupil_data = None
+    ino_data = None
+    block_data = pd.DataFrame()
 
-        if not 'record_bitalino' in block_cfg or block_cfg['record_bitalino']:
-            ino_file = os.path.join(path, f"{block_str}_bitalino.csv")
-            channel_file = os.path.join(path, f"{block_str}_channels.json")
-            if not os.path.exists(ino_file):
-                print(f"Bitalino data file not found: {ino_file}")
-                return None
+    events_file = os.path.join(path, f"{block_str}_events.csv")
+    if not os.path.exists(events_file):
+        print(f"Events file not found: {events_file}")
+        events = None
+    else:
+        events = pd.read_csv(events_file)
+    
+    if block_cfg['record_pupil']:
+        pupil_file = os.path.join(path, f"{block_str}_pupil.csv")
+        if not os.path.exists(pupil_file):
+            print(f"Pupil data file not found: {pupil_file}")
+        else:
+            pupil_df = pd.read_csv(pupil_file)
+            # Correct blink artifacts and filter
+            pupil_data = preprocess_pupil_data(pupil_df)
+            if pupil_data is not None:
+                block_data['Timestamps'] = pupil_data['timestamps']
+                block_data['pupilDiameter'] = pupil_data['data']
+
+    if block_cfg['record_bitalino']:
+        ino_file = os.path.join(path, f"{block_str}_bitalino.csv")
+        channel_file = os.path.join(path, f"{block_str}_channels.json")
+        if not os.path.exists(ino_file):
+            print(f"Bitalino data file not found: {ino_file}")
+
+        else:
             ino_df = pd.read_csv(ino_file)
             if not os.path.exists(channel_file):
                 print(f"Channel file not found: {channel_file}")
-                return None
-            channel_info = json.load(open(channel_file, 'r'))
-            
-    else:   
-        ino_df = None
-        pupil_df = None
-        lsl_events = None
+            else:
+                channel_info = json.load(open(channel_file, 'r'))
+                # preprocess ino data
+                ino_df['block_path'] = path
+                ino_data = preprocess_daq_data(ino_df, channel_info)
 
-    block_data = pd.DataFrame()
-    if pupil_df is not None:
-        # Correct blink artifacts and filter
-        pupil_data = preprocess_pupil_data(pupil_df)
-        if pupil_data is not None:
-            block_data['Timestamps'] = pupil_data['timestamps']
-            block_data['pupilDiameter'] = pupil_data['data']
-
-    if ino_df is not None:
-        # preprocess ino data
-        ino_df['block_path'] = path
-        ino_data = preprocess_daq_data(ino_df, channel_info)
-        
-        # if pupil data is available, resample ino data to pupil timestamps
-        if pupil_data is not None and ino_data is not None:
-            tq = block_data['Timestamps']
-            for i, channel in enumerate(ino_data):
-                if channel is None:
-                    continue
-               
-                if 'Timestamps' in channel:
-                    # Resample to pupil timestamps
-                    t = channel['Timestamps']
-                    x = channel['data']
-                    channel['data'] = np.interp(tq, t, x)
-                    channel['Timestamps'] = tq
-                    channel['Fs'] = pupil_data['Fs']
     
-                block_data[channel['signal_type']] = channel['data']
+        
+    # if pupil data is available, resample ino data to pupil timestamps
+    if ino_data is not None:
+        for i, channel in enumerate(ino_data):
+            if channel is None or len(channel['data']) == 0:
+                continue
+            if 'Timestamps' in channel:
+                t = channel['Timestamps']
+                x = channel['data']
+                if not block_data.empty:
+                    # Resample to pupil timestamps (200Hz)
+                    tq = block_data['Timestamps']
+                else:
+                    # resample to 200Hz
+                    tq = np.arange(t[0], t[-1], 0.005).round(3)  # 200 Hz
+                    
+                block_data[channel['signal_type']] = np.interp(tq, t, x)
+                block_data['Timestamps'] = tq
                 
     if block_data is not None: # find indices of events in block_data timestamps
-        if lsl_events is not None:
-            for index, event in lsl_events.iterrows():
+        if events is not None:
+            for index, event in events.iterrows():
                 # Find the closest timestamp in block_data
                 event_time = event['Timestamp']
                 closest_index = (block_data['Timestamps'] - event_time).abs().idxmin()
@@ -395,6 +396,19 @@ def launch_peak_editor(t, ecg, peaks, block_path):
     ax1.set_title(block_str)
     ax1.set_xlabel("Time (s)")
     ax1.set_ylabel("Amplitude")
+
+    # instructions for user input
+    instructions = (
+        "Instructions:\n"
+        "- Left click: select nearest peak\n"
+        "- Right click: add peak at click\n"
+        "- Delete: remove selected peak\n"
+        "- Left/Right arrows: move selected peak\n"
+        "- Z: undo, Y: redo\n"
+        "- Tab: reset zoom\n"
+        "- Space: shift view right\n"
+    )
+    plt.figtext(0, 0, instructions, wrap=True, horizontalalignment='left', fontsize=8)
 
     # Heart rate line on second subplot
     hr_line, = ax2.plot([], [], 'b-', label='Heart Rate (bpm)')
@@ -495,7 +509,7 @@ def launch_peak_editor(t, ecg, peaks, block_path):
     fig.canvas.mpl_connect('key_press_event', onkey)
 
     # Save button
-    save_ax = plt.axes([0.8, 0.01, 0.1, 0.05])  # x, y, width, height
+    save_ax = plt.axes((0.8, 0.01, 0.1, 0.05))  # x, y, width, height
     save_button = Button(save_ax, 'Save')
     save_flag = {'clicked': False}
 
@@ -520,26 +534,23 @@ def launch_peak_editor(t, ecg, peaks, block_path):
 # ---------------------------
 
 def main():
-    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/RawData"
-    output_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/AnalyzedData"
+    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/rawData"
 
-    start_date = 20250701
-    end_date = 20260701
-    
-    os.makedirs(output_dir, exist_ok=True)
+    start_date = 20250801
+    end_date = 20250923
 
     for subject in os.listdir(data_dir):
         subject_path = os.path.join(data_dir, subject)
         if not os.path.isdir(subject_path) or subject.startswith("test"):
             continue
-        print(f"Processing {subject}...")
+        
         
         for session in os.listdir(subject_path):
             session_path = os.path.join(subject_path, session)
             if not os.path.isdir(session_path) or not (start_date <= int(session) <= end_date):
                 continue
             # session_cfg = json.load(open(os.path.join(session_path, "session_config.json"), 'r'))
-
+            print(f"Processing {subject}...")
             for block in os.listdir(session_path):
                 block_path = os.path.join(session_path, block)
                 if not os.path.isdir(block_path):
@@ -578,7 +589,7 @@ def main():
                     print(f"Error processing {block_path}: {e}")
 
 
-    print(f"Data successfully exported to {output_dir}")
+    print(f"Data successfully exported to {data_dir}")
 
 if __name__ == "__main__":
     main()
