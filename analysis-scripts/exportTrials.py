@@ -2,12 +2,8 @@ import os
 import pandas as pd
 import json
 import numpy as np
-import scipy.signal as signal
 from matplotlib import pyplot as plt
-from based_noise_blinks_detection import detect_blinks
-import neurokit2 as nk
 import datetime
-import seaborn as sns
 
 def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=5, block_cfg=None):
     """Returns a tidy dataframe with trial-epoch data for the specified event."""

@@ -5,10 +5,9 @@ import numpy as np
 import scipy.signal as signal
 from matplotlib import pyplot as plt
 from based_noise_blinks_detection import detect_blinks
-import neurokit2 as nk
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
-from pointprocess_py import compute_full_regression, Distributions
+from pointprocess_py import compute_full_regression
 
 def preprocess_pupil_data(pupil_df):
     """
