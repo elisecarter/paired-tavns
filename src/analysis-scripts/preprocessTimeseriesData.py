@@ -3,6 +3,9 @@ import pandas as pd
 import json
 import numpy as np
 import scipy.signal as signal
+import argparse
+import sys
+import traceback
 from based_noise_blinks_detection import detect_blinks
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
@@ -284,11 +287,7 @@ def preprocess_daq_data(daq_df, channel_info):
 
     return preprocessed_data
 
-
 def preprocess_subject_block(path, block_str, block_cfg):
-    """Processes a single experimental block.
-    Returns block timeseries data after preprocessing."""
-
     # Preprocess data
     print(f"Processing block: {block_str}")
     
@@ -306,7 +305,7 @@ def preprocess_subject_block(path, block_str, block_cfg):
     else:
         events = pd.read_csv(events_file)
     
-    if block_cfg['record_pupil']:
+    if block_cfg.get('record_pupil', False):
         pupil_file = os.path.join(path, f"{block_str}_pupil.csv")
         if not os.path.exists(pupil_file):
             print(f"Pupil data file not found: {pupil_file}")
@@ -318,7 +317,7 @@ def preprocess_subject_block(path, block_str, block_cfg):
                 block_data['Timestamps'] = pupil_data['timestamps']
                 block_data['pupilDiameter'] = pupil_data['data']
 
-    if block_cfg['record_bitalino']:
+    if block_cfg.get('record_bitalino', False):
         ino_file = os.path.join(path, f"{block_str}_bitalino.csv")
         channel_file = os.path.join(path, f"{block_str}_channels.json")
         if not os.path.exists(ino_file):
@@ -386,8 +385,8 @@ def launch_peak_editor(t, ecg, peaks, block_path):
     history = []
     redo_stack = []
 
-    # New: two subplots, ECG and HR
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13.5, 7.5), sharex=True)
+    # New: two subplots, ECG and HR. Do NOT share x-axis so HR stays fixed.
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13.5, 7.5), sharex=False)
     plt.ion()  # enable interactive mode
     line, = ax1.plot(t, ecg, label='ECG')
     peak_plot, = ax1.plot(t[corrected_peaks], ecg[corrected_peaks], 'rx', label='Peaks')
@@ -399,43 +398,82 @@ def launch_peak_editor(t, ecg, peaks, block_path):
 
     # instructions for user input
     instructions = (
-        "Instructions:\n"
-        "- Left click: select nearest peak\n"
-        "- Right click: add peak at click\n"
-        "- Delete: remove selected peak\n"
-        "- Left/Right arrows: move selected peak\n"
-        "- Z: undo, Y: redo\n"
-        "- Tab: reset zoom\n"
-        "- Space: shift view right\n"
+        "Keyboard & Mouse Controls:\n"
+        "- Space / n : jump to next detected beat and center top view\n"
+        "- p        : jump to previous beat and center top view\n"
+        "- a        : add a peak at center of the current top view\n"
+        "- Left/Right arrows : move the selected peak by one sample\n"
+        "- Delete / Backspace / x : remove selected peak\n"
+        "- z / y    : undo / redo\n"
+        "- Tab      : reset top view to full recording\n"
+        "- s or Enter : save corrected peaks and close\n"
+        "- Mouse: Left click select nearest peak, Right click add peak at click\n"
     )
     plt.figtext(0, 0, instructions, wrap=True, horizontalalignment='left', fontsize=8)
 
     # Heart rate line on second subplot
     hr_line, = ax2.plot([], [], 'b-', label='Heart Rate (bpm)')
     ax2.set_ylabel("HR (bpm)")
+    # keep HR x-axis fixed to full time series
+    ax2.set_xlim([t[0], t[-1]])
+    # prevent autoscaling x on HR axis
+    try:
+        ax2.set_autoscalex_on(False)
+    except Exception:
+        pass
+    # marker on HR plot to indicate current selected time
+    hr_marker = ax2.axvline(x=t[0], color='r', linestyle='--', linewidth=1)
+    hr_marker.set_visible(False)
     plt.show(block=False)
 
     def update_display():
         peak_plot.set_xdata(t[corrected_peaks])
         peak_plot.set_ydata(ecg[corrected_peaks])
-        if selected_index is not None and len(corrected_peaks) > 0 and selected_index < len(corrected_peaks):
+        if selected_index is not None and len(corrected_peaks) > 0 and selected_index <= len(corrected_peaks):
             selected_plot.set_xdata([t[corrected_peaks[selected_index]]])
             selected_plot.set_ydata([ecg[corrected_peaks[selected_index]]])
+            ax1.set_xlim([max(t[0], t[corrected_peaks[selected_index]] - 2), min(t[-1], t[corrected_peaks[selected_index]] + 2)])
         else:
             selected_plot.set_xdata([])
             selected_plot.set_ydata([])
+            # don't touch hr_marker here; update later
         # Update heart rate subplot
+        # Update heart rate subplot only when we have consistent data
         if len(corrected_peaks) > 1:
             rr = np.diff(t[corrected_peaks])
             hr = 60 / rr
             hr_times = t[corrected_peaks][1:]
-            hr_line.set_xdata(hr_times)
-            hr_line.set_ydata(hr)
-            ax2.relim()
-            ax2.autoscale_view()
+            hr_times = np.asarray(hr_times)
+            hr = np.asarray(hr)
+            if hr_times.size == hr.size and hr.size > 0:
+                hr_line.set_xdata(hr_times)
+                hr_line.set_ydata(hr)
+                # autoscale only y-axis for HR while keeping x-axis fixed
+                try:
+                    ax2.relim()
+                    ax2.autoscale_view(scalex=False, scaley=True)
+                except Exception:
+                    # if relim/autoscale fails, skip to avoid crashing the GUI
+                    pass
+            else:
+                # length mismatch or empty -> clear HR line
+                hr_line.set_xdata([])
+                hr_line.set_ydata([])
         else:
             hr_line.set_xdata([])
             hr_line.set_ydata([])
+
+        # Update HR marker to show currently selected peak in the timeseries
+        try:
+            if selected_index is not None and len(corrected_peaks) > 0 and selected_index < len(corrected_peaks):
+                sel_time = float(t[corrected_peaks[selected_index]])
+                # set as two points to avoid broadcasting issues
+                hr_marker.set_xdata([sel_time, sel_time])
+                hr_marker.set_visible(True)
+            else:
+                hr_marker.set_visible(False)
+        except Exception:
+            hr_marker.set_visible(False)
         fig.canvas.draw_idle()
 
     def record_state():
@@ -470,35 +508,99 @@ def launch_peak_editor(t, ecg, peaks, block_path):
 
     def onkey(event):
         nonlocal selected_index, corrected_peaks
-        if event.key in ['backspace', 'delete','x']:
+        # normalize key (matplotlib may send ' ' or 'space')
+        key = event.key if event.key is not None else ''
+        key = key.lower()
+
+        if key in ['backspace', 'delete', 'x']:
             if selected_index is not None:
                 record_state()
                 print(f"Removed peak at {t[corrected_peaks[selected_index]]:.3f}s")
+                # remove the selected peak and pick a neighbor: prefer the next one, else previous
                 corrected_peaks.pop(selected_index)
-                selected_index = None
-        elif event.key == 'left' and selected_index is not None:
+                if len(corrected_peaks) == 0:
+                    selected_index = None
+                else:
+                    # if selection was at or beyond new length, move to last
+                    if selected_index >= len(corrected_peaks):
+                        selected_index = len(corrected_peaks) - 1
+                    # otherwise keep same index (now points to the next peak)
+                    print(f"Selected peak at {t[corrected_peaks[selected_index]]:.3f}s")
+
+        elif key == 'left' and selected_index is not None:
             record_state()
             corrected_peaks[selected_index] = max(0, corrected_peaks[selected_index] - 1)
-        elif event.key == 'right' and selected_index is not None:
+        elif key == 'right' and selected_index is not None:
             record_state()
             corrected_peaks[selected_index] = min(len(t) - 1, corrected_peaks[selected_index] + 1)
-        elif event.key == 'tab':
-            ax1.set_xlim([t[0], t[-1]])
-
-        elif event.key == 'space':
-            current_lim = ax1.get_xlim()
-            # shift window by length of the window
-            window_length = current_lim[1] - current_lim[0]
-            new_lim = [current_lim[0] + window_length, current_lim[1] + window_length]
-            if new_lim[1] > t[-1]:
-                new_lim = [t[-1] - window_length, t[-1]]
+        elif key == 'tab':
+            ax1.set_xlim([t[0], t[-1]]) # reset view to full
+            selected_index = None
+        elif key in [' ', 'space', 'n']:
+            # Jump to the next beat (keyboard-only navigation)
+            if len(corrected_peaks) == 0:
+                return
+            if selected_index is None:
+                selected_index = 0
+            else:
+                selected_index = min(len(corrected_peaks) - 1, selected_index + 1)
+            sel_time = t[corrected_peaks[selected_index]]
+            # center top panel around selected peak with a default 4s window
+            window = 4.0
+            half = window / 2.0
+            new_lim = [max(t[0], sel_time - half), min(t[-1], sel_time + half)]
+            # adjust if near edges to keep window length
+            if new_lim[1] - new_lim[0] < window:
+                if new_lim[0] == t[0]:
+                    new_lim[1] = min(t[-1], new_lim[0] + window)
+                else:
+                    new_lim[0] = max(t[0], new_lim[1] - window)
             ax1.set_xlim(new_lim)
-        elif event.key == 'z' and history:
+            print(f"Selected peak at {sel_time:.3f}s")
+
+        elif key == 'p':
+            # previous peak
+            if len(corrected_peaks) == 0:
+                return
+            if selected_index is None:
+                selected_index = 0
+            else:
+                selected_index = max(0, selected_index - 1)
+            sel_time = t[corrected_peaks[selected_index]]
+            window = 4.0
+            half = window / 2.0
+            new_lim = [max(t[0], sel_time - half), min(t[-1], sel_time + half)]
+            if new_lim[1] - new_lim[0] < window:
+                if new_lim[0] == t[0]:
+                    new_lim[1] = min(t[-1], new_lim[0] + window)
+                else:
+                    new_lim[0] = max(t[0], new_lim[1] - window)
+            ax1.set_xlim(new_lim)
+            print(f"Selected peak at {sel_time:.3f}s")
+
+        elif key == 'a':
+            # Add a peak at center of current view
+            center_time = np.mean(ax1.get_xlim())
+            new_idx = int(np.argmin(np.abs(t - center_time)))
+            if new_idx not in corrected_peaks:
+                record_state()
+                corrected_peaks.append(new_idx)
+                corrected_peaks.sort()
+                selected_index = corrected_peaks.index(new_idx)
+                print(f"Added peak at {t[new_idx]:.3f}s (keyboard)")
+
+        elif key in ['s', 'enter']:
+            # Save and close
+            save_flag['clicked'] = True
+            print('Saving corrected peaks and closing (keyboard)')
+            plt.close(fig)
+
+        elif key == 'z' and history:
             redo_stack.append(list(corrected_peaks))
             corrected_peaks = history.pop()
             selected_index = None
             print("Undo")
-        elif event.key == 'y' and redo_stack:
+        elif key == 'y' and redo_stack:
             history.append(list(corrected_peaks))
             corrected_peaks = redo_stack.pop()
             selected_index = None
@@ -528,68 +630,91 @@ def launch_peak_editor(t, ecg, peaks, block_path):
         np.save(save_path, np.array(corrected_peaks, dtype=int))
     return np.array(corrected_peaks, dtype=int)
 
-
-# ---------------------------
-# Main Pipeline
-# ---------------------------
-
 def main():
-    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/rawData"
+    parser = argparse.ArgumentParser(description='Preprocess timeseries data for paired-taVNS project')
+    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/Data", help='Top-level data directory')
+    parser.add_argument('--start-date', type=int, default=20250701, help='Start session (YYYYMMDD)')
+    parser.add_argument('--end-date', type=int, default=20250929, help='End session (YYYYMMDD)')
+    parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
+    parser.add_argument('--dry-run', action='store_true', help='List blocks that would be processed without writing output')
+    parser.add_argument('--subject', help='Optional: only process this subject folder')
+    args = parser.parse_args()
 
-    start_date = 20250801
-    end_date = 20250923
+    data_dir = args.data_dir
+    start_date = args.start_date
+    end_date = args.end_date
+    force = args.force
+    dry_run = args.dry_run
 
     for subject in os.listdir(data_dir):
         subject_path = os.path.join(data_dir, subject)
         if not os.path.isdir(subject_path) or subject.startswith("test"):
             continue
-        
-        
+        if args.subject and subject != args.subject:
+            continue
+
         for session in os.listdir(subject_path):
             session_path = os.path.join(subject_path, session)
-            if not os.path.isdir(session_path) or not (start_date <= int(session) <= end_date):
+            # skip non-directory or out-of-range sessions
+            try:
+                sess_int = int(session)
+            except Exception:
                 continue
-            # session_cfg = json.load(open(os.path.join(session_path, "session_config.json"), 'r'))
-            print(f"Processing {subject}...")
+            if not os.path.isdir(session_path) or not (start_date <= sess_int <= end_date):
+                continue
+
+            print(f"Processing {subject}/{session}...")
             for block in os.listdir(session_path):
                 block_path = os.path.join(session_path, block)
                 if not os.path.isdir(block_path):
                     continue
 
+                # If output already exists and not forcing, skip this block early
+                output_file = os.path.join(block_path, f"{block}_tsData.csv")
+                if os.path.exists(output_file) and not force:
+                    print(f"Skipping {block_path} — output exists (use --force to overwrite)")
+                    continue
+
                 try:
-                    block_cfg = json.load(open(os.path.join(block_path, f"{block}_config.json"), 'r'))
+                    cfg_path = os.path.join(block_path, f"{block}_config.json")
+                    block_cfg = json.load(open(cfg_path, 'r')) if os.path.exists(cfg_path) else {}
+                    # If dry-run, just report and skip heavy processing
+                    if dry_run:
+                        print(f"DRY RUN: would process {block_path}")
+                        continue
                     block_data = preprocess_subject_block(block_path, block, block_cfg)
-                    if block_data is not None:
+                    if block_data is not None and not block_data.empty:
                         # subtract t0 from timestamps
-                        t0 = block_data['Timestamps'][0]
-                        block_data['Timestamps'] = np.round(pd.to_numeric(block_data['Timestamps'], errors='coerce') - t0, 3)   
+                        t0 = block_data['Timestamps'].iloc[0]
+                        block_data['Timestamps'] = np.round(pd.to_numeric(block_data['Timestamps'], errors='coerce') - t0, 3)
 
                         # Save block timeseries data to CSV
-                        output_file = os.path.join(block_path, f"{block}_tsData.csv")
                         block_data.to_csv(output_file, index=False)
-                        
-                        
+
                         # plot data and save figures
                         plt.figure(figsize=(12, 8))
                         # Exclude 'Timestamps' and 'Event' columns for plotting
-                        plot_cols = [col for col in block_data.columns if col not in ['Timestamps', 'Event','nSeq']]
+                        plot_cols = [col for col in block_data.columns if col not in ['Timestamps', 'Event', 'nSeq']]
                         num_plots = len(plot_cols)
                         for idx, col in enumerate(plot_cols, start=1):
                             plt.subplot(num_plots, 1, idx)
                             plt.plot(block_data['Timestamps'], block_data[col], label=col)
                             plt.ylabel(col)
-                        
+
                         plt.xlabel('Time (s)')
-                        # plt.legend()
                         plt.tight_layout()
                         plt.savefig(os.path.join(block_path, f"{block}_tsData.png"))
                         plt.close()
 
                 except Exception as e:
-                    print(f"Error processing {block_path}: {e}")
+                    tb = sys.exc_info()[2]
+                    stack = traceback.extract_tb(tb)
+                    func_name = stack[-1].name if stack else '<unknown>'
+                    line_no = stack[-1].lineno if stack else '<unknown>'
+                    print(f"Error processing {block_path}: {e} (line {line_no} in {func_name})")
+                    print(traceback.format_exc())
 
-
-    print(f"Data successfully exported to {data_dir}")
+    print(f"Data processing complete. Data directory: {data_dir}")
 
 if __name__ == "__main__":
     main()
