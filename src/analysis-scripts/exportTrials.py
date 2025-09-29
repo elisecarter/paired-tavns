@@ -4,12 +4,16 @@ import json
 import numpy as np
 from matplotlib import pyplot as plt
 import datetime
+import argparse
+import sys
+import traceback
 
 def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=5, block_cfg=None):
     """Returns a tidy dataframe with trial-epoch data for the specified event."""
     event_inds =event_df.index            
     event_times = block_data.loc[event_inds, 'Timestamps']
     if event_times.empty:
+        # No events found at the requested indices
         return None
 
     event_str = [event]
@@ -21,7 +25,7 @@ def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=
     post_samples = int(post_event_dur / dt)
     
     # find skin conductance events
-    eda_thresh = 0.1 * np.max(block_data['SCR'])
+    # eda_thresh = 0.1 * np.max(block_data['SCR'])
 
     timeseries_data = []
     feature_data = []
@@ -47,7 +51,7 @@ def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=
 
             
             timeseries_data.append(pd.DataFrame({
-                'id': block_cfg.get('participant_ID') if block_cfg else None,
+                'id': block_cfg.get('ID') if block_cfg else None,
                 'order': block_cfg.get('order') if block_cfg else None,
                 'datetime': block_cfg.get('datetime') if block_cfg else None,
                 'condition': block_cfg.get('condition') if block_cfg else None,
@@ -75,7 +79,15 @@ def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=
                 feature_dict.update(features)
             feature_data.append(pd.DataFrame([feature_dict]))
 
-    return pd.concat(timeseries_data, ignore_index=True), pd.concat(feature_data, ignore_index=True)
+    # Safely concatenate only when we have collected data; otherwise return (None, None)
+    timeseries_df = pd.concat(timeseries_data, ignore_index=True) if timeseries_data else None
+    feature_df = pd.concat(feature_data, ignore_index=True) if feature_data else None
+
+    if timeseries_df is None and feature_df is None:
+        # No epoch data was created for this event
+        return None
+
+    return timeseries_df, feature_df
 
 def extract_features(trial_data, time, signal, thresh=0):
     """Extracts features from the trial timeseries."""
@@ -162,18 +174,32 @@ def extract_features(trial_data, time, signal, thresh=0):
 
 def main():
     today = datetime.datetime.today().strftime('%Y%m%d')
-    data_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/rawData"
-    output_dir = r"/Volumes/WHSynology/BIOElectricsLab/Elise/AnalyzedData/analyzedData"
-    output_dir = os.path.join(output_dir, today)
     
+    parser = argparse.ArgumentParser(description='Preprocess timeseries data for paired-taVNS project')
+    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/Data", help='Top-level data directory')
+    parser.add_argument('--output-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/analyzed-data", help='Output directory for processed data')
+    parser.add_argument('--start-date', type=int, default=20250701, help='Start session (YYYYMMDD)')
+    parser.add_argument('--end-date', type=int, default=20250929, help='End session (YYYYMMDD)')
+    parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
+    parser.add_argument('--dry-run', action='store_true', help='List blocks that would be processed without writing output')
+    parser.add_argument('--subject', help='Optional: only process this subject folder')
+    args = parser.parse_args()
+
+    data_dir = args.data_dir
+    output_dir = os.path.join(args.output_dir, today)
+    start_date = args.start_date
+    end_date = args.end_date
+    force = args.force
+    dry_run = args.dry_run
     os.makedirs(output_dir, exist_ok=True)
 
-    start_date = 20250701
-    end_date = 20250923
     for subject in os.listdir(data_dir):
         subject_path = os.path.join(data_dir, subject)
         if not os.path.isdir(subject_path) or subject.startswith("test"):
             continue
+        if args.subject and subject != args.subject:
+            continue
+
         print(f"Processing {subject}...")
         
         for session in os.listdir(subject_path):
@@ -181,7 +207,6 @@ def main():
             if not os.path.isdir(session_path) or not (start_date <= int(session) <= end_date):
                 continue
             
-
             for block in os.listdir(session_path):
                 block_path = os.path.join(session_path, block)
                 if not os.path.isdir(block_path):
@@ -272,7 +297,12 @@ def main():
                         feature_df.to_csv(csv_file, index=False, mode="a", header=not os.path.exists(csv_file))
 
                 except Exception as e:
-                    print(f"Error processing {block_path}: {e}")
+                    tb = sys.exc_info()[2]
+                    stack = traceback.extract_tb(tb)
+                    func_name = stack[-1].name if stack else '<unknown>'
+                    line_no = stack[-1].lineno if stack else '<unknown>'
+                    print(f"Error processing {block_path}: {e} (line {line_no} in {func_name})")
+                    print(traceback.format_exc())
 
     print(f"Data successfully exported to {output_dir}")
 

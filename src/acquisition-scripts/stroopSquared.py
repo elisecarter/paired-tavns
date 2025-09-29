@@ -64,7 +64,7 @@ def run_stroop_task(exp, config):
             'left': left_opt, 'left_color': left_color,
             'right': right_opt, 'right_color': right_color,
             'correct_response': correct_response,
-            'trial_type': 'stimCongruent_responsesCongruent'
+            'trial_type': 'cueCongruent_responsesCongruent'
         })
     
     # Fully incongruent (target and response options are incongruent)
@@ -84,7 +84,7 @@ def run_stroop_task(exp, config):
             'left': left_opt, 'left_color': left_color,
             'right': right_opt, 'right_color': right_color,
             'correct_response': correct_response,
-            'trial_type': 'stimIncongruent_responsesIncongruent'
+            'trial_type': 'cueIncongruent_responsesIncongruent'
         })
     
     # Target incongruent, responses congruent 
@@ -104,7 +104,7 @@ def run_stroop_task(exp, config):
             'left': left_opt, 'left_color': left_color,
             'right': right_opt, 'right_color': right_color,
             'correct_response': correct_response,
-            'trial_type': 'stimIncongruent_responsesCongruent'
+            'trial_type': 'cueIncongruent_responsesCongruent'
         })
         
     # Target congruent, responses incongruent
@@ -124,7 +124,7 @@ def run_stroop_task(exp, config):
             'left': left_opt, 'left_color': left_color,
             'right': right_opt, 'right_color': right_color,
             'correct_response': correct_response,
-            'trial_type': 'stimCongruent_responsesIncongruent'
+            'trial_type': 'cueCongruent_responsesIncongruent'
         })
     
     # Randomize the order of trials
