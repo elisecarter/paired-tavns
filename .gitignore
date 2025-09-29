@@ -4,3 +4,6 @@
 __pycache__/
 *.pyc
 data/
+cleanupDirs.py
+fileRename.py
+jsonEdit.py
