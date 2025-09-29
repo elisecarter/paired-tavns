@@ -182,7 +182,7 @@ if __name__ == '__main__':
     # Define experiment configuration
     config.update({
         "datetime": datetime.datetime.today(),
-        "experiment": "StroopSquared",
+        "experiment": "SCWT",
         "send_trigger_codes": False,  # send trigger codes to DAQ
         "trigger_codes": '',
         "num_trials": 20,   # Number of trials in the experiment

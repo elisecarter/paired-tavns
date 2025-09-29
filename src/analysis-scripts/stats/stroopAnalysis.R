@@ -7,10 +7,10 @@ library(jsonlite)
 library(lmerTest)
 
 # Set global parameters
-start_date <- 20250501
-end_date <- 20250701
-data_dir <- "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/pairedStroop/Data"
-output_dir <- "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/pairedStroop/analyzed-data"
+start_date <- 20250701
+end_date <- 20250930
+data_dir <- "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/Data"
+output_dir <- "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/analyzed-data"
 
 today <- format(Sys.Date(), "%Y%m%d")
 output_dir <- file.path(output_dir, today)
@@ -98,7 +98,7 @@ preprocess_data <- function(df, experiment_type) {
 #------------------------------------------------------------
 # Function to define color palette
 condition_colors <- c("#68689a", "#6666ff")
-names(condition_colors) <- c("sham","taVNS")
+names(condition_colors) <- c("sham", "taVNS")
 
 
 #------------------------------------------------------------
@@ -108,9 +108,11 @@ plot_rt_violin_box <- function(df_correct, condition_colors) {
     geom_violin(position = position_dodge(1), alpha = 0.5, color = NA) +
     scale_fill_manual(values = condition_colors) +
     geom_boxplot(width = 0.1, position = position_dodge(1)) +
-    labs(title = "Response Time by Condition and Congruency",
-         y = "Response Time (s)") +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+    labs(
+      title = "Response Time by Condition and Congruency",
+      y = "Response Time (s)"
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
     ylim(0.5, 4)
   print(p)
 }
@@ -121,45 +123,59 @@ plot_rt_violin_box <- function(df_correct, condition_colors) {
 plot_subject_summary <- function(subject_summary, group_summary, trial, type, condition_colors) {
   y_label <- ifelse(type == "rt", "response time (s)", "accuracy (%)")
   title_label <- ifelse(type == "rt",
-                        paste("Paired Response Times (Congruent:", trial, ")"),
-                        paste("Paired Accuracy (Congruent:", trial, ")"))
-  
-  valueAes <- if (type == "rt") { aes(y = rt_mean) } else { aes(y = acc_mean) }
+    paste("Paired Response Times (Congruent:", trial, ")"),
+    paste("Paired Accuracy (Congruent:", trial, ")")
+  )
+
+  valueAes <- if (type == "rt") {
+    aes(y = rt_mean)
+  } else {
+    aes(y = acc_mean)
+  }
   groupAes <- aes(group = subject)
-  
+
   p <- ggplot(filter(subject_summary, congruent == trial), aes(x = condition)) +
-    geom_line(aes(y = if(type=="rt") rt_mean else acc_mean, group = subject), 
-              alpha = 0.4, color = "gray40", linewidth=1)
-  
+    geom_line(aes(y = if (type == "rt") rt_mean else acc_mean, group = subject),
+      alpha = 0.4, color = "gray40", linewidth = 1
+    )
+
   if (type == "rt") {
     p <- p +
-      geom_errorbar(data = filter(group_summary, congruent == trial),
-                    aes(x = condition, ymin = rt_mean_group - rt_sem_group, ymax = rt_mean_group + rt_sem_group, color = condition),
-                    width = 0.1,linewidth=1, inherit.aes = FALSE) +
-      geom_point(data = filter(group_summary, congruent == trial),
-                 aes(x = condition, y = rt_mean_group, color = condition),
-                 inherit.aes = FALSE)
+      geom_errorbar(
+        data = filter(group_summary, congruent == trial),
+        aes(x = condition, ymin = rt_mean_group - rt_sem_group, ymax = rt_mean_group + rt_sem_group, color = condition),
+        width = 0.1, linewidth = 1, inherit.aes = FALSE
+      ) +
+      geom_point(
+        data = filter(group_summary, congruent == trial),
+        aes(x = condition, y = rt_mean_group, color = condition),
+        inherit.aes = FALSE
+      )
   } else {
     p <- p +
-      geom_errorbar(data = filter(group_summary, congruent == trial),
-                    aes(x = condition, ymin = acc_mean_group - acc_sem_group, ymax = acc_mean_group + acc_sem_group, color = condition),
-                    width = 0.1, linewidth=1,inherit.aes = FALSE) +
-      geom_point(data = filter(group_summary, congruent == trial),
-                 aes(x = condition, y = acc_mean_group, color = condition),
-                 inherit.aes = FALSE)
+      geom_errorbar(
+        data = filter(group_summary, congruent == trial),
+        aes(x = condition, ymin = acc_mean_group - acc_sem_group, ymax = acc_mean_group + acc_sem_group, color = condition),
+        width = 0.1, linewidth = 1, inherit.aes = FALSE
+      ) +
+      geom_point(
+        data = filter(group_summary, congruent == trial),
+        aes(x = condition, y = acc_mean_group, color = condition),
+        inherit.aes = FALSE
+      )
   }
-  
+
   p <- p +
     scale_color_manual(values = condition_colors) +
     labs(title = title_label, y = y_label)
-  
+
   # Set y-axis limits based on type
   if (type == "rt") {
-    p <- p + ylim(0,3)
+    p <- p + ylim(0, 3)
   } else {
     p <- p + ylim(0.5, 1)
   }
-  
+
   print(p)
 }
 
@@ -182,25 +198,37 @@ plot_aggregate_summary <- function(subject_summary, group_summary, type, conditi
     "Paired Scores Across All Conditions"
   }
 
-  p <- ggplot(subject_summary, aes(x = condition, y = if(type=="rt") rt_mean else if (type=="acc") acc_mean else score_mean, group = subject)) +
-    geom_line(alpha = 0.4, color = "gray40", linewidth=1) +
-    geom_point(data = group_summary, 
-               aes(x = condition, y = if(type=="rt") rt_mean_group else if (type=="acc") acc_mean_group else score_mean_group,
-                   color = condition), inherit.aes = FALSE) +
-    geom_errorbar(data = group_summary,
-                  aes(x = condition,
-                      ymin = if (type=="rt") rt_mean_group - rt_sem_group else if (type=="acc") {
-                         acc_mean_group - acc_sem_group
-                      } else {
-                         score_mean_group - score_sem_group
-                      },
-                      ymax = if (type=="rt") rt_mean_group + rt_sem_group else if (type=="acc") {
-                         acc_mean_group + acc_sem_group
-                      } else {
-                         score_mean_group + score_sem_group
-                      },
-                      color = condition),
-                  width = 0.1, linewidth=1, inherit.aes = FALSE) +
+  p <- ggplot(subject_summary, aes(x = condition, y = if (type == "rt") rt_mean else if (type == "acc") acc_mean else score_mean, group = subject)) +
+    geom_line(alpha = 0.4, color = "gray40", linewidth = 1) +
+    geom_point(
+      data = group_summary,
+      aes(
+        x = condition, y = if (type == "rt") rt_mean_group else if (type == "acc") acc_mean_group else score_mean_group,
+        color = condition
+      ), inherit.aes = FALSE
+    ) +
+    geom_errorbar(
+      data = group_summary,
+      aes(
+        x = condition,
+        ymin = if (type == "rt") {
+          rt_mean_group - rt_sem_group
+        } else if (type == "acc") {
+          acc_mean_group - acc_sem_group
+        } else {
+          score_mean_group - score_sem_group
+        },
+        ymax = if (type == "rt") {
+          rt_mean_group + rt_sem_group
+        } else if (type == "acc") {
+          acc_mean_group + acc_sem_group
+        } else {
+          score_mean_group + score_sem_group
+        },
+        color = condition
+      ),
+      width = 0.1, linewidth = 1, inherit.aes = FALSE
+    ) +
     scale_color_manual(values = condition_colors) +
     labs(title = title_label, y = y_label)
 
@@ -209,7 +237,7 @@ plot_aggregate_summary <- function(subject_summary, group_summary, type, conditi
   } else if (type == "acc") {
     p <- p + ylim(0.5, 1)
   }
-  
+
   print(p)
 }
 
@@ -237,22 +265,30 @@ plot_by_block <- function(agg_order_summary, agg_block_summary, type, condition_
   } else {
     stop("Unknown type. Please choose 'rt', 'acc', or 'score'.")
   }
-  
+
   p <- ggplot(agg_order_summary, aes(x = block, y = .data[[y_col_order]], linetype = order)) +
     # Faint lines for each subject
-    geom_line(data = agg_block_summary, aes(x = block, y = .data[[y_col_block]], group = subject),
-              alpha = 0.3, linewidth = 0.8) +
+    geom_line(
+      data = agg_block_summary, aes(x = block, y = .data[[y_col_block]], group = subject),
+      alpha = 0.3, linewidth = 0.8
+    ) +
     # Bold line for each order (group summary)
     geom_line(aes(group = order), linewidth = 1.2) +
-    geom_errorbar(aes(ymin = .data[[y_col_order]] - .data[[sem_col]],
-                      ymax = .data[[y_col_order]] + .data[[sem_col]],
-                      color = condition),
-                  width = 0.1, linewidth = 1) +
+    geom_errorbar(
+      aes(
+        ymin = .data[[y_col_order]] - .data[[sem_col]],
+        ymax = .data[[y_col_order]] + .data[[sem_col]],
+        color = condition
+      ),
+      width = 0.1, linewidth = 1
+    ) +
     scale_color_manual(values = condition_colors) +
-    labs(title = title_text,
-          x = "Block", y = y_label) +
+    labs(
+      title = title_text,
+      x = "Block", y = y_label
+    ) +
     theme_minimal()
-  
+
   print(p)
 }
 
@@ -295,7 +331,7 @@ run_analysis <- function(experiment_type) {
       score_sem = sd(score, na.rm = TRUE) / sqrt(n()),
       .groups = "drop"
     )
-  
+
   # Group summary for each trial type (for plotting error bars)
   group_summary <- subject_summary %>%
     group_by(condition, congruent) %>%
@@ -308,11 +344,11 @@ run_analysis <- function(experiment_type) {
       score_sem_group = sd(score_mean, na.rm = TRUE) / sqrt(n()),
       .groups = "drop"
     )
-  
+
   # Initialize lists for statistical test outputs
   t_test <- list()
   wilcox <- list()
-  
+
   # Loop over each level of congruency
   for (trial in unique(subject_summary$congruent)) {
     # Wilcoxon signed rank test on individual trial RTs
@@ -320,7 +356,7 @@ run_analysis <- function(experiment_type) {
       filter(congruent == trial) %>%
       select(subject, condition, block, trial_number, rt) %>%
       pivot_wider(names_from = condition, values_from = rt)
-    wilcox[[as.character(trial)]] <- wilcox.test(pivot_wilcox$taVNS, pivot_wilcox$sham, exact=TRUE)$p.value
+    wilcox[[as.character(trial)]] <- wilcox.test(pivot_wilcox$taVNS, pivot_wilcox$sham, exact = TRUE)$p.value
 
     # Paired t-test for RT using subject-level summary
     pivot_rt <- subject_summary %>%
@@ -328,21 +364,21 @@ run_analysis <- function(experiment_type) {
       select(subject, rt_mean, condition) %>%
       pivot_wider(names_from = condition, values_from = rt_mean)
     t_test[[paste0("rt_", trial)]] <- t.test(pivot_rt$taVNS, pivot_rt$sham, paired = TRUE)$p.value
-    
+
     # Plot subject RT with group summary
     plot_subject_summary(subject_summary, group_summary, trial, type = "rt", condition_colors = condition_colors)
-    
+
     # Paired t-test for Accuracy
     pivot_acc <- subject_summary %>%
       filter(congruent == trial) %>%
       select(subject, acc_mean, condition) %>%
       pivot_wider(names_from = condition, values_from = acc_mean)
     t_test[[paste0("acc_", trial)]] <- t.test(pivot_acc$taVNS, pivot_acc$sham, paired = TRUE)$p.value
-    
+
     # Plot subject Accuracy with group summary
     plot_subject_summary(subject_summary, group_summary, trial, type = "acc", condition_colors = condition_colors)
   }
-  
+
   # Aggregate summaries for all trial types
   agg_block_summary <- df %>%
     group_by(subject, condition, block, order) %>%
@@ -352,7 +388,7 @@ run_analysis <- function(experiment_type) {
       score = last(score),
       .groups = "drop"
     )
-  
+
   agg_order_summary <- agg_block_summary %>%
     group_by(block, order, condition) %>%
     summarise(
@@ -364,7 +400,7 @@ run_analysis <- function(experiment_type) {
       score_sem = sd(score, na.rm = TRUE) / sqrt(n()),
       .groups = "drop"
     )
-  
+
   agg_subject_summary <- agg_block_summary %>%
     group_by(subject, condition) %>%
     summarise(
@@ -376,7 +412,7 @@ run_analysis <- function(experiment_type) {
       score_sem = sd(score, na.rm = TRUE) / sqrt(n()),
       .groups = "drop"
     )
-  
+
   agg_group_summary <- agg_subject_summary %>%
     group_by(condition) %>%
     summarise(
@@ -394,23 +430,23 @@ run_analysis <- function(experiment_type) {
   plot_by_block(agg_order_summary, agg_block_summary, "acc", condition_colors)
   plot_by_block(agg_order_summary, agg_block_summary, "score", condition_colors)
 
-  
+
   # Paired t-test for overall RT and plot aggregate summary
   pivot_all_rt <- agg_subject_summary %>%
     select(subject, rt_mean, condition) %>%
     pivot_wider(names_from = condition, values_from = rt_mean)
   t_test[["rt_all"]] <- t.test(pivot_all_rt$taVNS, pivot_all_rt$sham, paired = TRUE)$p.value
-  
+
   plot_aggregate_summary(agg_subject_summary, agg_group_summary, type = "rt", condition_colors = condition_colors)
-  
+
   # Paired t-test for overall Accuracy and plot aggregate summary
   pivot_all_acc <- agg_subject_summary %>%
     select(subject, acc_mean, condition) %>%
     pivot_wider(names_from = condition, values_from = acc_mean)
   t_test[["acc_allTypes"]] <- t.test(pivot_all_acc$taVNS, pivot_all_acc$sham, paired = TRUE)$p.value
-  
+
   plot_aggregate_summary(agg_subject_summary, agg_group_summary, type = "acc", condition_colors = condition_colors)
-  
+
   # Paired t-test for score and plot aggregate summary
   pivot_score <- agg_subject_summary %>%
     select(subject, score_mean, condition) %>%
@@ -420,10 +456,10 @@ run_analysis <- function(experiment_type) {
   plot_aggregate_summary(agg_subject_summary, agg_group_summary, type = "score", condition_colors = condition_colors)
 
   # Count subjects and trials
-  trial_counts <- df %>% 
-    group_by(subject, condition, block, congruent, correct) %>% 
+  trial_counts <- df %>%
+    group_by(subject, condition, block, congruent, correct) %>%
     summarise(n_trials = n(), .groups = "drop")
- 
+
   # Save statistical test results to file
   sink(report_file)
 
@@ -439,7 +475,7 @@ run_analysis <- function(experiment_type) {
 
   print("Paired t-test p-values:")
   print(t_test)
-  
+
   sink()
   dev.off()
 }
