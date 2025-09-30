@@ -7,7 +7,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
-BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "Data")
+BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "Data")
 CALIBRATE_SCRIPT = r"calibrateStimulation.py"
 EXPERIMENT_SCRIPTS = {
     "Stroop Color Word Task": r"stroopTask.py",

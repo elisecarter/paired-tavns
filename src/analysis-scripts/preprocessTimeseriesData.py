@@ -634,7 +634,7 @@ def main():
     parser = argparse.ArgumentParser(description='Preprocess timeseries data for paired-taVNS project')
     parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/Data", help='Top-level data directory')
     parser.add_argument('--start-date', type=int, default=20250701, help='Start session (YYYYMMDD)')
-    parser.add_argument('--end-date', type=int, default=20250929, help='End session (YYYYMMDD)')
+    parser.add_argument('--end-date', type=int, default=np.inf, help='End session (YYYYMMDD)')
     parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
     parser.add_argument('--dry-run', action='store_true', help='List blocks that would be processed without writing output')
     parser.add_argument('--subject', help='Optional: only process this subject folder')
