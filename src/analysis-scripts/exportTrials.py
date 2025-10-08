@@ -176,10 +176,10 @@ def main():
     today = datetime.datetime.today().strftime('%Y%m%d')
     
     parser = argparse.ArgumentParser(description='Preprocess timeseries data for paired-taVNS project')
-    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/Data", help='Top-level data directory')
+    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS", help='Top-level data directory')
     parser.add_argument('--output-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-tavns/analyzed-data", help='Output directory for processed data')
     parser.add_argument('--start-date', type=int, default=20250701, help='Start session (YYYYMMDD)')
-    parser.add_argument('--end-date', type=int, default=20250929, help='End session (YYYYMMDD)')
+    parser.add_argument('--end-date', type=int, default=np.inf, help='End session (YYYYMMDD)')
     parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
     parser.add_argument('--dry-run', action='store_true', help='List blocks that would be processed without writing output')
     parser.add_argument('--subject', help='Optional: only process this subject folder')
@@ -209,7 +209,7 @@ def main():
             
             for block in os.listdir(session_path):
                 block_path = os.path.join(session_path, block)
-                if not os.path.isdir(block_path):
+                if not os.path.isdir(block_path) or block.startswith('analyzed'):
                     continue
                 
                 feature_data = []
