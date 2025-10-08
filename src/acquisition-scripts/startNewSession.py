@@ -7,7 +7,7 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
-BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "Data")
+BASE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "Data")
 CALIBRATE_SCRIPT = r"calibrateStimulation.py"
 EXPERIMENT_SCRIPTS = {
     "Stroop Color Word Task": r"stroopTask.py",
@@ -29,7 +29,7 @@ class SessionGUI(tk.Tk):
 
         # New variables for calibration frequency options
         self.calib_freq_30_var = tk.BooleanVar(value=True)
-        self.calib_freq_95_var = tk.BooleanVar(value=False)
+        self.calib_freq_100_var = tk.BooleanVar(value=False)
         # Variable for selecting which calibration frequency to use later
         self.stim_freq_var = tk.StringVar()
 
@@ -60,11 +60,11 @@ class SessionGUI(tk.Tk):
         row += 1
 
         # New: Calibration Frequency options as checkboxes
-        ttk.Label(frame, text="Stimulation Frequency (Hz):").grid(row=row, column=0, sticky="w", pady=(0, 10))
+        ttk.Label(frame, text="Calibration Frequency (Hz):").grid(row=row, column=0, sticky="w", pady=(0, 10))
         freq_frame = ttk.Frame(frame)
         freq_frame.grid(row=row, column=1, sticky="w", pady=(0, 10))
         ttk.Checkbutton(freq_frame, text="30", variable=self.calib_freq_30_var).pack(side="left")
-        ttk.Checkbutton(freq_frame, text="100", variable=self.calib_freq_95_var).pack(side="left")
+        ttk.Checkbutton(freq_frame, text="100", variable=self.calib_freq_100_var).pack(side="left")
         row += 1
         
         # Toggle for Triggering Stimulation
@@ -141,6 +141,7 @@ class SessionGUI(tk.Tk):
         except IndexError:
             calib_order = ["sham", "taVNS"]
 
+        
         for freq in calib_freqs:
             print(f"Running calibration for frequency: {freq} Hz")
             calibrator = calib.Calibrator(
@@ -162,7 +163,6 @@ class SessionGUI(tk.Tk):
             f.seek(0)
             f.truncate()
             json.dump(cfg, f, indent=2)
-        self._build_selections_frame(cfg)
 
     def submit_session(self):
         pid = self.participant_id_var.get().strip()
@@ -171,7 +171,7 @@ class SessionGUI(tk.Tk):
             messagebox.showerror("Input Error", "Please enter a Participant ID.")
             return
         if not order:
-            messagebox.showerror("Input Error", "Please select a Condition Order.")
+            messagebox.showerror("Input Error", "Please select a Condition Order.") 
             return
 
         self.order = order
@@ -191,11 +191,12 @@ class SessionGUI(tk.Tk):
         calib_freqs = []
         if self.calib_freq_30_var.get():
             calib_freqs.append(30)
-        if self.calib_freq_95_var.get():
+        if self.calib_freq_100_var.get():
             calib_freqs.append(100)
-        if not calib_freqs:
-            messagebox.showerror("Frequency Error", "Select at least one calibration frequency.")
+        if self.trigger_stim_var.get() and not calib_freqs:
+            messagebox.showerror("Frequency Error", "Select at least one stimulation frequency.")
             return
+        self.calib_freqs = calib_freqs
 
         cfg.update({
             "ID": pid,
@@ -220,16 +221,10 @@ class SessionGUI(tk.Tk):
             if cfg['trigger_stim']:
                 messagebox.showinfo("Calibration", "No calibration results found. Running calibration...")
                 self.run_calibration(calib_freqs)
-            else:
-                self._build_selections_frame(cfg) # need to call if not running calibration
         else:
             self.calibration_results = cfg.get("calibration results", {})
-            missing_freqs = [freq for freq in calib_freqs if str(freq) not in self.calibration_results]
-            if missing_freqs:
-                # If there are missing frequencies, run calibration for those
-                self.run_calibration(missing_freqs)
-
-            self._build_selections_frame(cfg) # need to call if not running calibration
+            
+        self._build_selections_frame(cfg) 
 
 
     def prompt_additional_calibration(self):
@@ -252,7 +247,7 @@ class SessionGUI(tk.Tk):
         
         # Select Stimulation Frequency
         ttk.Label(frm, text="Stimulation Frequency (Hz):").grid(row=1, column=0, sticky="w", pady=(0, 10))
-        freq_options = list(self.calibration_results.keys())
+        freq_options = list([30, 100])
         if cfg['trigger_stim']:
             self.stim_freq_var.set(freq_options[0])
         else:
@@ -352,14 +347,37 @@ class SessionGUI(tk.Tk):
         self.info_lbl.grid(row=2, column=0, columnspan=2, pady=(0, 10))
         frm.columnconfigure(0, weight=1)
         frm.columnconfigure(1, weight=1)
-        ttk.Button(frm, text="Start Block", command=self.start_block).grid(row=3, column=0, columnspan=2, pady=5)
+        ttk.Button(frm, text="Set block no.", command=self.set_block).grid(row=3, column=0, pady=5)
+        ttk.Button(frm, text="Start Block", command=self.start_block).grid(row=3, column=1, pady=5)
+        self._update_info()
+
+    def set_block(self):
+        block_no = simpledialog.askstring("Set Block Number", f"Enter block number (1-{self.num_blocks}):")
+        if block_no is None:
+            return
+        try:
+            block_no_int = int(block_no)
+            if not (1 <= block_no_int <= self.num_blocks):
+                raise ValueError("Block number out of range.")
+            self.block_idx = block_no_int - 1
+            self._update_info()
+        except ValueError as e:
+            messagebox.showerror("Invalid Input", f"Please enter a valid block number: {e}")
+            return
+        
         self._update_info()
 
     def _update_info(self):
         # Use the calibration data from the selected frequency
         with open(self.config_path, "r") as f:   # type: ignore
             cfg = json.load(f)
-        calib_data = self.calibration_results.get(self.stim_freq_var.get(), {})
+        
+        if self.stim_freq not in self.calib_freqs:
+            calib_data = self.calibration_results.get(str(self.calib_freqs[0]), {})
+            messagebox.showwarning("Warning", f"Selected stimulation frequency {self.stim_freq} Hz was not used in calibration. Using results for {self.calib_freqs[0]} Hz.")
+        else:
+            calib_data = self.calibration_results.get(str(int(self.stim_freq)), {})
+
         if self.block_idx >= self.num_blocks:
             # close the frame
             for w in self.winfo_children():

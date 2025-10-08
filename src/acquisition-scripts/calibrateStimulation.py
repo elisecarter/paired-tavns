@@ -92,9 +92,9 @@ class Calibrator:
                         prev_rating = float(rating.get(current_keys[idx-1], 0))
                     except ValueError:
                         prev_rating = 0
-                    if prev_rating > 7:
-                        print(f"Skipping {percentage} ({value} mA) as previous rating was > 7.")
-                        status[percentage] = "skipped due to previous rating > 7"
+                    if prev_rating >= 7:
+                        print(f"Skipping {percentage} ({value} mA) as previous rating was >= 7.")
+                        status[percentage] = "skipped due to previous rating >= 7"
                         break
                 try:
                     input(f"Set current amplitude to {percentage} ({value} mA). Press ENTER to send pulse. (Press CTRL+C to skip remaining pulses)")
