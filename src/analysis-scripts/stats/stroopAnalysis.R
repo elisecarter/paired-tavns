@@ -5,11 +5,12 @@ library(tidyr)
 library(ggsci)
 library(jsonlite)
 library(lmerTest)
+library(stringr)
 
 # Set global parameters
 start_date <- 20250701
-end_date <- 20250930
-data_dir <- "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/Data"
+end_date <- 20250931
+data_dir <- "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS"
 output_dir <- "/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS/analyzed-data"
 
 today <- format(Sys.Date(), "%Y%m%d")
@@ -127,12 +128,6 @@ plot_subject_summary <- function(subject_summary, group_summary, trial, type, co
     paste("Paired Accuracy (Congruent:", trial, ")")
   )
 
-  valueAes <- if (type == "rt") {
-    aes(y = rt_mean)
-  } else {
-    aes(y = acc_mean)
-  }
-  groupAes <- aes(group = subject)
 
   p <- ggplot(filter(subject_summary, congruent == trial), aes(x = condition)) +
     geom_line(aes(y = if (type == "rt") rt_mean else acc_mean, group = subject),
@@ -173,7 +168,7 @@ plot_subject_summary <- function(subject_summary, group_summary, trial, type, co
   if (type == "rt") {
     p <- p + ylim(0, 3)
   } else {
-    p <- p + ylim(0.5, 1)
+    p <- p + ylim(0.2, 1)
   }
 
   print(p)
@@ -305,7 +300,9 @@ run_analysis <- function(experiment_type) {
     return(NULL)
   }
   df <- preprocess_data(df_raw, experiment_type)
+  df$congruent <- str_replace_all(string=df$congruent, pattern="cue", replacement="stim")
   df_correct <- df %>% filter(correct == "True")
+  
   plot_rt_violin_box(df_correct, condition_colors)
 
   # Create block-level summary for RT and Accuracy
