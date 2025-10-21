@@ -632,7 +632,7 @@ def launch_peak_editor(t, ecg, peaks, block_path):
 
 def main():
     parser = argparse.ArgumentParser(description='Preprocess timeseries data for paired-taVNS project')
-    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS", help='Top-level data directory')
+    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-tavns-analysis", help='Top-level data directory')
     parser.add_argument('--start-date', type=int, default=20250701, help='Start session (YYYYMMDD)')
     parser.add_argument('--end-date', type=int, default=np.inf, help='End session (YYYYMMDD)')
     parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
