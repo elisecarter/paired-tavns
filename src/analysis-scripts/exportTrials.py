@@ -10,70 +10,108 @@ import traceback
 
 def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=5, block_cfg=None):
     """Returns a tidy dataframe with trial-epoch data for the specified event."""
-    event_inds =event_df.index            
-    event_times = block_data.loc[event_inds, 'Timestamps']
-    if event_times.empty:
-        # No events found at the requested indices
-        return None
+    # Convert timestamps to numeric seconds (handle datetime or numeric)
+    if np.issubdtype(block_data['Timestamps'].dtype, np.datetime64) or hasattr(block_data['Timestamps'].dtype, 'tz'):
+        times = pd.to_datetime(block_data['Timestamps']).astype('datetime64[ns]').astype('int64') / 1e9
+    else:
+        times = block_data['Timestamps'].to_numpy(dtype=float)
 
-    event_str = [event]
-    if len(event_str) != 1:
-        raise ValueError("Multiple unique event strings found, expected one.")
-    
-    dt = block_data['Timestamps'].diff().mean()
-    pre_samples = int(pre_event_dur / dt)
-    post_samples = int(post_event_dur / dt)
-    
-    # find skin conductance events
-    # eda_thresh = 0.1 * np.max(block_data['SCR'])
+    # Compute dt (seconds) robustly
+    diffs = np.diff(times)
+    if len(diffs) == 0:
+        return None, None
+    dt = float(np.mean(diffs))
+    if dt <= 0 or np.isnan(dt):
+        return None, None
+
+    pre_samples = max(1, int(np.round(pre_event_dur / dt)))
+    post_samples = max(1, int(np.round(post_event_dur / dt)))
 
     timeseries_data = []
     feature_data = []
-    for i, (event_idx, event_row) in enumerate(event_df.iterrows()):
-        start_ind = event_idx - pre_samples
-        end_ind = event_idx + post_samples
-        if start_ind < 0 or end_ind >= len(block_data):
-            continue
-        
-        rel_time = block_data['Timestamps'].iloc[start_ind:end_ind].to_numpy() - block_data['Timestamps'].iloc[event_idx]
-        for sig in block_data.columns.difference(['Timestamps', 'Event', 'nSeq']):
-            values = block_data[sig].iloc[start_ind:end_ind].to_numpy()
-            
-            # First, z-score the trial using pre-event-dur.
-            BL_mask = (rel_time >= -0.5) & (rel_time < 0)
-            BL_mean = values[BL_mask].mean()
-            BL_std = values[BL_mask].std()
-            if BL_std == 0:
-                BL_std = 1
-            
-            values = (values - BL_mean) / BL_std
-            features = extract_features(values, rel_time, sig)
 
-            
-            timeseries_data.append(pd.DataFrame({
-                'id': block_cfg.get('ID') if block_cfg else None,
+    # iterate events but map event index labels to positional indices in block_data
+    for i, (event_idx, event_row) in enumerate(event_df.iterrows()):
+        try:
+            pos = block_data.index.get_loc(event_idx)
+        except Exception:
+            # fallback to integer position lookup
+            pos_list = block_data.index.get_indexer([event_idx])
+            if len(pos_list) == 0 or pos_list[0] == -1:
+                continue
+            pos = int(pos_list[0])
+
+        start_ind = pos - pre_samples
+        end_ind = pos + post_samples
+        if start_ind < 0 or end_ind > (len(block_data) - 1):
+            continue
+
+        rel_time = times[start_ind:end_ind] - times[pos]
+
+        for sig in block_data.columns.difference(['Timestamps', 'Event', 'nSeq']):
+            values = block_data[sig].iloc[start_ind:end_ind].to_numpy(dtype=float)
+
+            # baseline window derived from pre_event_dur
+            BL_mask = (rel_time >= -pre_event_dur) & (rel_time < 0)
+            BL_vals = values[BL_mask]
+            if BL_vals.size == 0:
+                BL_mean = 0.0
+                BL_std = 1.0
+                baseline_flag = False
+            else:
+                BL_mean = np.nanmean(BL_vals)
+                BL_std = np.nanstd(BL_vals)
+                baseline_flag = True
+                if np.isnan(BL_std) or BL_std == 0:
+                    # avoid divide-by-zero; mark invalid baseline
+                    BL_std = 1.0
+                    baseline_flag = False
+
+            z_values = (values - BL_mean) / BL_std
+
+            # Extract features on post-event window (extract_features expects numpy arrays)
+            features = extract_features(z_values, rel_time, sig)
+
+            # build long-form timeseries rows (one row per sample)
+            n_samples = len(rel_time)
+            if n_samples != len(z_values):
+                continue
+
+            # canonical id field from block_cfg
+            subj_id = None
+            if block_cfg:
+                subj_id = block_cfg.get('participant_ID', block_cfg.get('ID'))
+
+            ts_df = pd.DataFrame({
+                'id': subj_id,
                 'order': block_cfg.get('order') if block_cfg else None,
                 'datetime': block_cfg.get('datetime') if block_cfg else None,
                 'condition': block_cfg.get('condition') if block_cfg else None,
                 'experiment': block_cfg.get('experiment') if block_cfg else None,
                 'block': block_cfg.get('block_no') if block_cfg else None,
-                'trial': event_df['trial'].iloc[i],
-                'time': rel_time.round(3),
+                'trial': int(event_df['trial'].iloc[i]) if 'trial' in event_df.columns else None,
+                'time': np.round(rel_time, 3),
                 'signal_type': sig,
-                'event': event_str[0].strip(''),
-                'value': values.round(3)
-            }))
-            
+                'event': str(event).strip(),
+                'value': np.round(z_values, 3)
+            })
+
+            # explode arrays into long-form rows
+            ts_long = ts_df.explode(['time', 'value']).reset_index(drop=True)
+            timeseries_data.append(ts_long)
+
+            # feature dict
             feature_dict = {
-                'id': block_cfg.get('participant_ID') if block_cfg else None,
+                'id': subj_id,
                 'order': block_cfg.get('order') if block_cfg else None,
                 'datetime': block_cfg.get('datetime') if block_cfg else None,
                 'condition': block_cfg.get('condition') if block_cfg else None,
                 'experiment': block_cfg.get('experiment') if block_cfg else None,
                 'block': block_cfg.get('block_no') if block_cfg else None,
-                'trial': event_df['trial'].iloc[i],
-                'event': event_str[0].strip(''),
+                'trial': int(event_df['trial'].iloc[i]) if 'trial' in event_df.columns else None,
+                'event': str(event).strip(),
                 'signal_type': sig,
+                'baseline_valid': baseline_flag
             }
             if isinstance(features, dict):
                 feature_dict.update(features)
@@ -84,8 +122,7 @@ def epoch_by_event(block_data, event, event_df, pre_event_dur=5, post_event_dur=
     feature_df = pd.concat(feature_data, ignore_index=True) if feature_data else None
 
     if timeseries_df is None and feature_df is None:
-        # No epoch data was created for this event
-        return None
+        return None, None
 
     return timeseries_df, feature_df
 
@@ -104,13 +141,20 @@ def extract_features(trial_data, time, signal, thresh=0):
     min_value = trial_data.min()
     peak_time = time[trial_data.argmax()]
     trough_time = time[trial_data.argmin()]
-    dt = int(np.mean(np.diff(time)))
-    auc = np.trapezoid(trial_data, time, dx=dt)
-    abs_auc = np.trapezoid(np.abs(trial_data), time, dx=dt)
+    dt = float(np.mean(np.diff(time))) if len(time) > 1 else 0.0
+    # use trapz for numerical integration; pass x=time to be safe
+    try:
+        auc = np.trapezoid(trial_data, x=time)
+        abs_auc = np.trapezoid(np.abs(trial_data), x=time)
+    except Exception:
+        auc = np.nan
+        abs_auc = np.nan
 
     features = {
         'mean': trial_data.mean(),
         'std': trial_data.std(),
+        'median': np.median(trial_data),
+        'iqr': np.subtract(*np.percentile(trial_data, [75, 25])),
         'min': min_value,
         'max': max_value,
         'peak_time': peak_time,
@@ -176,8 +220,8 @@ def main():
     today = datetime.datetime.today().strftime('%Y%m%d')
     
     parser = argparse.ArgumentParser(description='Preprocess timeseries data for paired-taVNS project')
-    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-taVNS", help='Top-level data directory')
-    parser.add_argument('--output-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-tavns/analyzed-data", help='Output directory for processed data')
+    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-tavns-analysis", help='Top-level data directory')
+    parser.add_argument('--output-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-tavns-analysis/analyzed-data", help='Output directory for processed data')
     parser.add_argument('--start-date', type=int, default=20250701, help='Start session (YYYYMMDD)')
     parser.add_argument('--end-date', type=int, default=np.inf, help='End session (YYYYMMDD)')
     parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
@@ -195,7 +239,7 @@ def main():
 
     for subject in os.listdir(data_dir):
         subject_path = os.path.join(data_dir, subject)
-        if not os.path.isdir(subject_path) or subject.startswith("test"):
+        if not os.path.isdir(subject_path) or subject.startswith("test") or subject.startswith('analyzed'):
             continue
         if args.subject and subject != args.subject:
             continue
@@ -209,9 +253,9 @@ def main():
             
             for block in os.listdir(session_path):
                 block_path = os.path.join(session_path, block)
-                if not os.path.isdir(block_path) or block.startswith('analyzed'):
+                if not os.path.isdir(block_path):
                     continue
-                
+                print(f"  Processing block {block}...")
                 feature_data = []
                 # check for stroop table in block directory
                 if os.path.exists(os.path.join(block_path, f"{block}_stroopTrials.csv")):
@@ -246,14 +290,14 @@ def main():
                         df_events = df_events[df_events['event'].str.contains('stim|cue|response', case=False, na=False)]
 
                         for pos, (idx, event) in enumerate(df_events['event'].items()):
-                            if 'stim' in event.lower() or 'cue' in event.lower():
+                            if 'cue' in event.lower():
                                 if pos + 1 < len(df_events):
                                     next_event = df_events['event'].iloc[pos + 1]
                                     response = next_event.split('_')[-1]  # Get the last part after underscore
                                     df_events.at[idx, 'event'] = f"{event}_{response}"
-                                else: #delete the event
-                                    df_events.drop(idx, inplace=True)
-                            
+                                else: # delete event if no next event
+                                    df_events.at[idx, 'event'] = None
+
                         response_mask = df_events['event'].str.contains('response_', case=False, na=False)
                         df_events = df_events.loc[~response_mask]
                         df_events['trial'] = np.arange(1, len(df_events) + 1, dtype=int)
@@ -283,7 +327,6 @@ def main():
 
                     if timeseries_data:
                         timeseries_df = pd.concat(timeseries_data, ignore_index=True)
-                       
                         csv_file = os.path.join(output_dir, "epochs-table.csv")
                         timeseries_df.to_csv(csv_file, index=False, mode="a", header=not os.path.exists(csv_file))
 
@@ -303,7 +346,7 @@ def main():
                     line_no = stack[-1].lineno if stack else '<unknown>'
                     print(f"Error processing {block_path}: {e} (line {line_no} in {func_name})")
                     print(traceback.format_exc())
-
+    
     print(f"Data successfully exported to {output_dir}")
 
 
