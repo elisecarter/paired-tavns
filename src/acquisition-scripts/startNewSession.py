@@ -372,7 +372,7 @@ class SessionGUI(tk.Tk):
         with open(self.config_path, "r") as f:   # type: ignore
             cfg = json.load(f)
         
-        if self.stim_freq not in self.calib_freqs:
+        if self.stim_freq not in self.calib_freqs and cfg['trigger_stim']:
             calib_data = self.calibration_results.get(str(self.calib_freqs[0]), {})
             messagebox.showwarning("Warning", f"Selected stimulation frequency {self.stim_freq} Hz was not used in calibration. Using results for {self.calib_freqs[0]} Hz.")
         else:
