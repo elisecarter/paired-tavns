@@ -237,6 +237,17 @@ def run_stroop_task(exp, config):
         # Close the window
         win.close()
 
+def get_default_config():
+    """Return default configuration values for the stroop squared task."""
+    return {
+        "experiment": "StroopSquared",
+        "datetime": datetime.datetime.today(),
+        "num_trials": 100,   # Number of trials in the experiment
+        "ratio_incongruent": 0.25,   # Ratio of incongruent trials to total trials
+        "baseline_dur": 0,    # Duration of fixation before Stroop cue
+        "poststim_dur": 1,     # Duration of fixation after response
+        "stim_dur": 0.5,    # stimulation train duration
+    }
 
 def load_config(config_path):
     with open(config_path, 'r') as f:
@@ -244,25 +255,15 @@ def load_config(config_path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Stroop Task")
-    parser.add_argument("--config", required=True, help="Path to configuration file")
+    parser.add_argument("--config", required=False, help="Path to configuration file")
     args = parser.parse_args()
-    config = load_config(args.config)
-
-    # Define experiment configuration
-
-    # Define experiment configuration
-    config.update({
-        "datetime": datetime.datetime.today(),
-        "experiment": "StroopSquared",
-        "send_trigger_codes": False,  # send trigger codes to DAQ
-        "trigger_codes": '',
-        "num_trials": 100,   # Number of trials in the experiment
-        "ratio_incongruent": 0.25,   # Ratio of incongruent trials to total trials
-        "baseline_dur": 0,    # Duration of fixation before Stroop cue
-        "poststim_dur": 1,     # Duration of fixation after response
-        "stim_dur": 0.5,    # stimulation train duration
-    })
-    if config['condition'] == "practice":
+    # Load config if provided, otherwise use empty dict for defaults
+    loaded_config = load_config(args.config) if args.config else {}
+    
+    # Start with defaults and update with any provided config values
+    config = get_default_config()
+    config.update(loaded_config)
+    if not args.config or config['condition'] == "practice":
             config.update({
                 "trigger_stim": False
         })

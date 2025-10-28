@@ -48,32 +48,38 @@ def run_plrt(exp, config):
         if exp.trigger_stim: exp.stim_task.stop()
     win.close()
 
+def get_default_config():
+    """Return default configuration values for the SCWT task."""
+    return {
+        "experiment": "PLRT",
+        "datetime": datetime.datetime.today(),
+        "num_trials": 10,   # Number of trials in the experiment
+        "ratio_incongruent": 0.5,   # Ratio of incongruent trials to total trials
+        "baseline_dur": 2.0,    # Duration of fixation before Stroop cue
+        "poststim_dur": 0,     # Duration of fixation after response
+        "stim_dur": 3,    # stimulation train duration
+        "light_stim_dur": 0.5  # duration of light flash
+
+    }
+
 def load_config(config_path):
     with open(config_path, 'r') as f:
         return json.load(f)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Stroop Task")
-    parser.add_argument("--config", required=True, help="Path to configuration file")
+    parser.add_argument("--config", required=False, help="Path to configuration file")
     args = parser.parse_args()
-    config = load_config(args.config)
+    # Load config if provided, otherwise use empty dict for defaults
+    loaded_config = load_config(args.config) if args.config else {}
+    
+    # Start with defaults and update with any provided config values
+    config = get_default_config()
+    config.update(loaded_config)
+    if not args.config or config['condition'] == "practice":
 
-    # Define experiment configuration
-    config.update({
-        "datetime": datetime.datetime.today(),
-        "experiment": "PLRT",
-        "send_trigger_codes": False,  # send trigger codes to DAQ
-        "trigger_codes": '',  # Trigger codes for different events
-        "num_trials": 10,   # Number of trials in the experiment
-        "baseline_dur": 2.0,    # Duration of fixation before stim/light stimulus
-        "poststim_dur": 0,     # Duration of fixation after response
-        "stim_dur": 3,    # stimulation train duration
-        "light_stim_dur": 0.5  # duration of light flash
-    })
-
-    if config['condition'] == "practice":
         config.update({
-            "num_trials": 2,  # Fewer trials for practice
+            "num_trials": 5,  # Fewer trials for practice
             "trigger_stim": False
         })
 

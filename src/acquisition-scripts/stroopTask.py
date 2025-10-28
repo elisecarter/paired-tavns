@@ -158,7 +158,18 @@ def run_stroop_task(exp, config):
         core.wait(3)  # Wait for 3 seconds before closing the window
         win.close()
 
-        
+def get_default_config():
+    """Return default configuration values for the SCWT task."""
+    return {
+        "experiment": "SCWT",
+        "datetime": datetime.datetime.today(),
+        "num_trials": 20,   # Number of trials in the experiment
+        "ratio_incongruent": 0.5,   # Ratio of incongruent trials to total trials
+        "baseline_dur": 2.0,    # Duration of fixation before Stroop cue
+        "poststim_dur": 3.0,     # Duration of fixation after response
+        "stim_dur": 0.5,    # stimulation train duration
+    }
+
 
 def load_config(config_path):
     with open(config_path, 'r') as f:
@@ -166,10 +177,20 @@ def load_config(config_path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Stroop Task")
-    parser.add_argument("--config", required=True, help="Path to configuration file")
+    parser.add_argument("--config", required=False, help="Path to configuration file (optional)")
     args = parser.parse_args()
-    config = load_config(args.config)
 
+    # Load config if provided, otherwise use empty dict for defaults
+    loaded_config = load_config(args.config) if args.config else {}
+    
+    # Start with defaults and update with any provided config values
+    config = get_default_config()
+    config.update(loaded_config)
+    if config['condition'] == "practice":
+        config.update({
+        "trigger_stim": False,
+        "num_trials": 10,
+    })
     # trigger_codes = {
 #     'fixation_start': 1, # 2 on MSI
 #     'cue_congruent': 2, # 4 on MSI
@@ -178,31 +199,12 @@ if __name__ == '__main__':
 #     'response_incorrect': 5, # 10 on MSI
 #     'stim_on': 6, #12 on MSI               ###############ADD taVNS/sham####
 #     'stim_off': 7,
-
-    # Define experiment configuration
-    config.update({
-        "datetime": datetime.datetime.today(),
-        "experiment": "SCWT",
-        "send_trigger_codes": False,  # send trigger codes to DAQ
-        "trigger_codes": '',
-        "num_trials": 20,   # Number of trials in the experiment
-        "ratio_incongruent": 0.5,   # Ratio of incongruent trials to total trials
-        "baseline_dur": 2.0,    # Duration of fixation before Stroop cue
-        "poststim_dur": 3.0,     # Duration of fixation after response
-        "stim_dur": 0.5,    # stimulation train duration
-    })
-
-    if config['condition'] == "practice":
-        config.update({
-            "trigger_stim": False,
-            "num_trials": 10,
-        })
-
+    
     # Initialize the experiment with configuration
     exp = Experiment(config)
     exp.setup_data_streams()
     exp.setup_stimulation_trigger()
-    
+
     # Run the task...
     print("Starting stroop task...")
     try:
