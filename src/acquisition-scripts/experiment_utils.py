@@ -438,9 +438,9 @@ class Experiment:
 
     def log_event(self, label: str):
         t_host = time.monotonic()  # seconds, monotonic system clock
-        if self.acquisition_mode == "lsl" and self.event_outlet is not None:
+        if self.acquisition_mode == "LSL" and self.event_outlet is not None:
             self.event_outlet.push_sample([label])  # primary clock is LSL
-        else:  # Always keep a local copy with host time for redundancy/QA
+        else:  # keep a local copy with host time for redundancy/QA
             with self.data_collector.event_lock:
                 self.data_collector.event_data.append({
                     "Timestamp": t_host,
