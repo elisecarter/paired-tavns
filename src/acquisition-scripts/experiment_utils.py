@@ -5,6 +5,13 @@ from nidaqmx import stream_readers, constants
 from nidaqmx.constants import AcquisitionType, FrequencyUnits, LineGrouping
 from pupil_labs.realtime_api.simple import Device
 from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop
+try:
+    # pylsl defines cf_string constant in some versions
+    from pylsl import cf_string
+except Exception:
+    # use integer fallback (1) which corresponds to cf_string in pylsl C bindings
+    cf_string = 1
+import datetime
 import numpy as np
 import pandas as pd
 import threading
@@ -132,7 +139,7 @@ def setup_lsl_outlets():
         type='Markers',
         channel_count=1,
         nominal_srate=0,
-        channel_format='string', 
+        channel_format=cf_string,
         source_id='event12345'
     )
     event_outlet = StreamOutlet(event_info)
@@ -380,21 +387,23 @@ class Experiment:
     """
     def __init__(self, config):
         # Configuration parameters (required and optional)
-        self.ID = config["ID"]
-        self.datetime = config["datetime"]
-        self.condition = config["condition"]
-        self.trigger_stim = config["trigger_stim"]
-        self.send_trigger_codes = config["send_trigger_codes"]
-        self.trigger_codes = config["trigger_codes"]
-        self.record_pupil = config["record_pupil"]
-        self.record_bitalino = config["record_bitalino"]
-        self.acquisition_mode = config["acquisition_mode"]
-        self.stim_freq = config["stim_freq"]
-        self.stim_dur = config["stim_dur"]
-        self.neon_ip = config["neon_ip"]
-        self.bitalino_mac = config["bitalino_mac"]
-        self.bitalino_srate = config["bitalino_srate"]
-        self.bitalino_ch = config["bitalino_channels"]
+        # Use defaults when keys are missing so Experiment can be instantiated without a full config
+        self.ID = config.get("ID", "test")
+        self.datetime = config.get("datetime", datetime.datetime.today())
+        self.condition = config.get("condition", "test")
+        self.trigger_stim = config.get("trigger_stim", False)
+        self.send_trigger_codes = config.get("send_trigger_codes", False)
+        self.trigger_codes = config.get("trigger_codes", {})
+        self.record_pupil = config.get("record_pupil", False)
+        self.record_bitalino = config.get("record_bitalino", False)
+        # Accept either 'LSL' or 'lsl' or 'direct' (normalize to upper for comparison)
+        self.acquisition_mode = config.get("acquisition_mode", "direct")
+        self.stim_freq = config.get("stim_freq", 1.0)
+        self.stim_dur = config.get("stim_dur", 0.1)
+        self.neon_ip = config.get("neon_ip", None)
+        self.bitalino_mac = config.get("bitalino_mac", None)
+        self.bitalino_srate = config.get("bitalino_srate", 1000)
+        self.bitalino_ch = config.get("bitalino_channels", [])
         self.data_collector = DataCollector()
         self.config = config
         self.correct_sound = sound.Sound(os.path.join(os.path.dirname(os.path.realpath(__file__)), "correctresponse.wav"))
