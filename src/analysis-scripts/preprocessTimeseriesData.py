@@ -356,6 +356,8 @@ def preprocess_subject_block(path, block_str, block_cfg):
     if block_data is not None: # find indices of events in block_data timestamps
         if events is not None:
             for index, event in events.iterrows():
+                if event['Timestamp'] < block_data['Timestamps'].iloc[0] or event['Timestamp'] > block_data['Timestamps'].iloc[-1]:
+                    continue
                 # Find the closest timestamp in block_data
                 event_time = event['Timestamp']
                 closest_index = (block_data['Timestamps'] - event_time).abs().idxmin()
@@ -632,7 +634,7 @@ def launch_peak_editor(t, ecg, peaks, block_path):
 
 def main():
     parser = argparse.ArgumentParser(description='Preprocess timeseries data for paired-taVNS project')
-    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-tavns-analysis", help='Top-level data directory')
+    parser.add_argument('--data-dir', default=r"/Users/elise/Library/CloudStorage/OneDrive-TheUniversityofColoradoDenver/Desktop/paired-tavns-analysis/Data", help='Top-level data directory')
     parser.add_argument('--start-date', type=int, default=20250701, help='Start session (YYYYMMDD)')
     parser.add_argument('--end-date', type=int, default=np.inf, help='End session (YYYYMMDD)')
     parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
@@ -699,6 +701,10 @@ def main():
                         for idx, col in enumerate(plot_cols, start=1):
                             plt.subplot(num_plots, 1, idx)
                             plt.plot(block_data['Timestamps'], block_data[col], label=col)
+                            if 'Event' in block_data.columns:
+                                event_times = block_data.loc[block_data['Event'].notnull(), 'Timestamps']
+                                for et in event_times:
+                                    plt.axvline(x=et, color='r', linestyle='--', alpha=0.5)
                             plt.ylabel(col)
 
                         plt.xlabel('Time (s)')
