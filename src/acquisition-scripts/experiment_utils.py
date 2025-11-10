@@ -4,13 +4,7 @@ import nidaqmx
 from nidaqmx import stream_readers, constants
 from nidaqmx.constants import AcquisitionType, FrequencyUnits, LineGrouping
 from pupil_labs.realtime_api.simple import Device
-from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop
-try:
-    # pylsl defines cf_string constant in some versions
-    from pylsl import cf_string
-except Exception:
-    # use integer fallback (1) which corresponds to cf_string in pylsl C bindings
-    cf_string = 1
+from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop, cf_string  
 import datetime
 import numpy as np
 import pandas as pd
@@ -18,7 +12,8 @@ import threading
 import os
 import time
 import json
-
+import itertools
+import csv
 
 class DataCollector:
     """
@@ -27,6 +22,7 @@ class DataCollector:
     def __init__(self):
         self.event_data = []
         self.pupil_data = []
+        self.pupil_event_data = []
         self.bitalino_data = []
         self.bitalino_channels = {}
         self.running = True
@@ -34,8 +30,80 @@ class DataCollector:
         # self.ni_daq_lock = threading.Lock()
         self.event_lock = threading.Lock()
         self.pupil_lock = threading.Lock()
+        self.pupil_event_lock = threading.Lock()
         self.bitalino_lock = threading.Lock()
 
+
+class StreamRecorder:
+    def __init__(self, stream_info, file_path, data_collector):
+        self.stream_info = stream_info
+        self.file_path = file_path
+        self.data_collector = data_collector
+        self.inlet = StreamInlet(stream_info)
+        self.inlet.open_stream()
+        self.file_handle = open(file_path, 'w', newline='')
+        self.csv_writer = csv.writer(self.file_handle)
+        self._write_header()
+
+    def _get_channel_labels(self):
+        labels = []
+        description = self.stream_info.desc()
+        channel = description.child("channels").first_child()
+        while not channel.empty():
+            label = channel.child_value("label")
+            if not label:
+                # Fallback for streams that don't have labels
+                label = f"channel_{len(labels) + 1}"
+            labels.append(label)
+            channel = channel.next_sibling()
+        
+        if not labels:
+            labels = [f"channel_{i+1}" for i in range(self.stream_info.channel_count())]
+            
+        return labels
+
+    def _write_header(self):
+        header = ["corrected_lsl_timestamp", "lsl_timestamp"] + self._get_channel_labels()
+        self.csv_writer.writerow(header)
+
+    def record_chunk(self):
+        samples, timestamps = self.inlet.pull_chunk(timeout=1.0)
+        if samples:
+            # Correct LSL timestamps to Pupil time
+            try:
+                offset = self.inlet.time_correction()
+            except Exception as e:
+                print(f"Time correction failed for {self.stream_info.name()}: {e}")
+                offset = 0
+
+            rows = []
+            for sample, ts in zip(samples, timestamps):
+                corrected_ts = ts + offset
+                row = [corrected_ts, ts] + list(sample)
+                rows.append(row)
+            
+            self.csv_writer.writerows(rows)
+            self.file_handle.flush() # Ensure data is written to disk
+
+    def close(self):
+        self.inlet.close_stream()
+        self.file_handle.close()
+        print(f"Closed stream and file for {self.stream_info.name()}")
+
+def record_lsl_stream(prop, value, file_path, data_collector):
+    print(f"Looking for LSL stream with {prop}='{value}'...")
+    streams = resolve_byprop(prop, value, timeout=5)
+    if not streams:
+        print(f"LSL stream with {prop}='{value}' not found.")
+        return
+
+    recorder = StreamRecorder(streams[0], file_path, data_collector)
+    print(f"Recording from {streams[0].name()} to {file_path}")
+
+    while data_collector.running:
+        recorder.record_chunk()
+    
+    recorder.close()
 
 def initialize_stimulation_task(device, stim_freq, onTime):
     counter_channel = f'{device}/ctr0'
@@ -157,88 +225,23 @@ def _to_host_time(timestamps, inlet):
         corr = 0.0
     return [t + corr for t in timestamps], corr
 
-def receive_pupil_lsl(data_collector):
-    # Resolve the Pupil Labs stream 
-    print("Looking for Pupil Labs data stream...")
-    pupil_streams = resolve_byprop('name', 'Neon Companion_Neon Gaze',timeout=5)
-    if not pupil_streams:
-        print("Pupil Labs stream not found.")
-        return
-    pupil_inlet = StreamInlet(pupil_streams[0])
-    pupil_inlet.open_stream(timeout=1.0)
-    print("Pupil Labs stream found.")
-    while data_collector.running:
-        samples, timestamps = pupil_inlet.pull_chunk(timeout=1.0)
-        if samples and timestamps:
-            ts_host, corr = _to_host_time(timestamps, pupil_inlet)
-            with data_collector.pupil_lock:
-                for s, t in zip(samples, ts_host):
-                    data_collector.pupil_data.append({
-                        'Timestamp': t, 
-                        'Pupil_Diameter': s[2], 
-                        'TimeCorrection': corr})
+# def receive_pupil_lsl(data_collector):
+#     # This function is now a placeholder, the new implementation uses StreamRecorder
+#     # but we keep it for compatibility with any code that might still call it.
+#     # The actual recording is handled by record_lsl_stream.
+#     pass
 
-def receive_bitalino_lsl(data_collector):
-    # Resolve the Bitalino stream
-    mac_add = "20:19:07:00:80:63"
-    print("Looking for Bitalino data stream...")
-    stream = resolve_byprop('type', mac_add, timeout=5.0)
-    if not stream:
-        print("Bitalino stream not found.")
-        return
-    inlet = StreamInlet(stream[0])
-    print("Bitalino stream found.")
-    # Access the channel number and data type
-    stream_info = inlet.info()
-    channel_number = stream_info.channel_count()
-    # Store sensor channel info & units in the dictionary
-    channels = stream_info.desc().child("channels").child("channel")
-    # Loop through all available channels
-    stream_channels = dict()
-    for i in range(channel_number):
-        # Get the channel number (e.g. 1)
-        channel = i + 1
-        # Get the channel type (e.g. ECG)
-        sensor = channels.child_value("label")
-        # Get the channel unit (e.g. mV)
-        unit = channels.child_value("unit")
-        # Store the information in the stream_channels dictionary
-        stream_channels.update({channel: [sensor, unit]})
-        channels = channels.next_sibling()
-    data_collector.bitalino_channels = stream_channels
-    
-    inlet.open_stream(timeout=1.0)
-    while data_collector.running:
-        samples, timestamps = inlet.pull_chunk(timeout=1.0)
-        if samples and timestamps:
-            ts_host, corr = _to_host_time(timestamps, inlet)
-            with data_collector.bitalino_lock:
-                for s, t in zip(samples, ts_host):
-                    data_collector.bitalino_data.append({
-                        'Timestamp': t,
-                        'Sample': s,
-                        'TimeCorrection': corr
-                    })
+# def receive_pupil_events_lsl(data_collector):
+#     # This function is now a placeholder
+#     pass
 
-def receive_events_lsl(data_collector):
-    print("Looking for events stream...")
-    stroop_streams = resolve_byprop('name', 'Event_Stream')
-    if not stroop_streams:
-        print("Events stream not found.")
-        return
-    event_inlet = StreamInlet(stroop_streams[0])
-    event_inlet.open_stream(timeout=1.0)
-    print("Events stream found.")
-    while data_collector.running:
-        sample, timestamp = event_inlet.pull_sample(timeout=1.0)
-        if sample and timestamp:
-            ts_host, corr = _to_host_time([timestamp], event_inlet)
-            with data_collector.event_lock:
-                data_collector.event_data.append({
-                    'Timestamp': ts_host[0],
-                    'Event': sample[0],
-                    'TimeCorrection': corr
-                })
+# def receive_bitalino_lsl(data_collector):
+#     # This function is now a placeholder
+#     pass
+
+# def receive_events_lsl(data_collector):
+#     # This function is now a placeholder
+#     pass
 
 # ---- DIRECT MODE: Pupil via Pupil Labs Realtime API ----
 def receive_pupil_direct(neon, data_collector, host="127.0.0.1", port=8080):
@@ -324,11 +327,31 @@ def start_direct_collection_threads(self):
                 
 def start_lsl_collection_threads(self):
     threads = []
-    threads.append(threading.Thread(target=receive_events_lsl, args=(self.data_collector,)))
+    
+    # Create data directory
+    date_str = self.datetime.strftime("%Y%m%d")
+    datetime_str = self.datetime.strftime("%Y%m%d-%H%M")
+    self.data_dir = os.path.join("Data", self.ID, date_str, datetime_str)
+    if not os.path.exists(self.data_dir):
+        os.makedirs(self.data_dir, exist_ok=True)
+
+    # Setup and start thread for the main experiment events
+    events_file_path = os.path.join(self.data_dir, f"{datetime_str}_events.csv")
+    threads.append(threading.Thread(target=record_lsl_stream, args=('name', 'Event_Stream', events_file_path, self.data_collector)))
+
     if self.record_pupil:
-        threads.append(threading.Thread(target=receive_pupil_lsl, args=(self.data_collector,)))
+        # Setup and start thread for pupil gaze data
+        pupil_file_path = os.path.join(self.data_dir, f"{datetime_str}_pupil_gaze.csv")
+        threads.append(threading.Thread(target=record_lsl_stream, args=('name', 'Neon Companion_Neon Gaze', pupil_file_path, self.data_collector)))
+        
+        # Setup and start thread for pupil events data
+        pupil_events_file_path = os.path.join(self.data_dir, f"{datetime_str}_pupil_events.csv")
+        threads.append(threading.Thread(target=record_lsl_stream, args=('name', 'Neon Companion_Neon Events', pupil_events_file_path, self.data_collector)))
+
     if self.record_bitalino:
-        threads.append(threading.Thread(target=receive_bitalino_lsl, args=(self.data_collector,)))
+        bitalino_file_path = os.path.join(self.data_dir, f"{datetime_str}_bitalino.csv")
+        mac_address = self.config.get("bitalino_mac", "20:19:07:00:80:63")
+        threads.append(threading.Thread(target=record_lsl_stream, args=('type', mac_address, bitalino_file_path, self.data_collector)))
 
     for t in threads: t.start()
     return tuple(threads)
@@ -353,23 +376,23 @@ def save_data(ID, datetime, data_collector,config):
         config["datetime"] = datetime_str
         json.dump(config, outfile, indent=4)
 
-    # Convert lists to DataFrames
-    # ni_daq_df = pd.DataFrame(data_collector.ni_daq_data)
+    # Convert lists to DataFrames for data not handled by StreamRecorder
+    # event_df = pd.DataFrame(data_collector.event_data)
+    bitalino_df = pd.DataFrame(data_collector.bitalino_data)
     event_df = pd.DataFrame(data_collector.event_data)
     pupil_df = pd.DataFrame(data_collector.pupil_data)
-    bitalino_df = pd.DataFrame(data_collector.bitalino_data)
     channels_info = data_collector.bitalino_channels
 
     # Set 'Timestamp' as the index if available and save to csv
-    # if not ni_daq_df.empty:
-    #     ni_daq_df.set_index('Timestamp', inplace=True)
-    #     ni_daq_df.to_csv(os.path.join(data_dir, f"{ID}_daq.csv"))
     if not event_df.empty:
         event_df.set_index('Timestamp', inplace=True)
         event_df.to_csv(os.path.join(data_dir, f"{datetime_str}_events.csv"))
+    
+    # Pupil data is now saved by StreamRecorder, so we don't save it here.
     if not pupil_df.empty:
         pupil_df.set_index('Timestamp', inplace=True)
         pupil_df.to_csv(os.path.join(data_dir, f"{datetime_str}_pupil.csv"))
+
     if not bitalino_df.empty:
         bitalino_df.set_index('Timestamp', inplace=True)
         bitalino_df.to_csv(os.path.join(data_dir, f"{datetime_str}_bitalino.csv"))
@@ -406,6 +429,7 @@ class Experiment:
         self.bitalino_ch = config.get("bitalino_channels", [])
         self.data_collector = DataCollector()
         self.config = config
+        self.data_dir = None # Will be set in setup_data_streams
         self.correct_sound = sound.Sound(os.path.join(os.path.dirname(os.path.realpath(__file__)), "correctresponse.wav"))
         self.incorrect_sound = sound.Sound(os.path.join(os.path.dirname(os.path.realpath(__file__)), "wrongresponse.wav"))
         self.trigger_code_task = None
@@ -487,4 +511,4 @@ class Experiment:
             time.sleep(1)  # Give some time for the recording to save
             self.neon.close()
             print('Neon recording successfully closed')
-    
+            
