@@ -433,29 +433,59 @@ class SessionGUI(tk.Tk):
                 return
 
             self.condition = condition
-            ratings = calib_data.get(condition, {}).get("perceived rating", {})
-            current_values = calib_data.get(condition, {}).get("calculated_currents", {})
+            
+            # Get calibration data for both conditions to find a commonly tolerated level
+            tavns_data = self.calibration_results.get("taVNS", {})
+            sham_data = self.calibration_results.get("sham", {})
+
+            tavns_ratings = tavns_data.get("perceived rating", {})
+            tavns_currents = tavns_data.get("calculated_currents", {})
+            sham_ratings = sham_data.get("perceived rating", {})
+            sham_currents = sham_data.get("calculated_currents", {})
+
             options = ["200%", "175%", "150%", "125%", "100%"]
             try:
                 start_idx = options.index(self.default_percentage)
             except ValueError:
-                start_idx = options.index("150%")
+                start_idx = options.index("150%") # Fallback to 150%
+            
             search_order = options[start_idx:]
+            
+            best_percentage = None
             for percentage in search_order:
-                if percentage not in ratings or percentage not in current_values:
-                    continue
-                current = current_values[percentage]
-                if current > 5.0 or ratings.get(percentage, 0) > 7:
-                    continue
-                break
-            else:
-                percentage = search_order[-1]
-                current = current_values.get(percentage, 0.0)
+                # Check if this percentage is valid for taVNS
+                is_valid_tavns = (
+                    percentage in tavns_ratings and
+                    percentage in tavns_currents and
+                    tavns_currents.get(percentage, 999) <= 5.0 and
+                    tavns_ratings.get(percentage, 999) <= 7
+                )
+                # Check if this percentage is valid for Sham
+                is_valid_sham = (
+                    percentage in sham_ratings and
+                    percentage in sham_currents and
+                    sham_currents.get(percentage, 999) <= 5.0 and
+                    sham_ratings.get(percentage, 999) <= 7
+                )
 
-            self.percentage = percentage
-            self.current_amplitude = current
+                if is_valid_tavns and is_valid_sham:
+                    best_percentage = percentage
+                    break # Found the highest commonly tolerated percentage
+            
+            if best_percentage is None:
+                # If no common percentage is found, default to the lowest option or handle error
+                best_percentage = "100%" 
+                messagebox.showwarning("Calibration Mismatch", "Could not find a commonly tolerated stimulation level. Defaulting to 100%. Please check calibration.")
+
+            # Determine the current for the specific condition of this block
+            current_calib_data = calib_data.get(condition, {})
+            current_values = current_calib_data.get("calculated_currents", {})
+            
+            self.percentage = best_percentage
+            self.current_amplitude = current_values.get(best_percentage, 0.0)
+
             txt = (f"Block {self.block_idx + 1}/{self.num_blocks} - "
-                   f"Condition: {condition} - {percentage} Amp: {self.current_amplitude:.2f} mA - {self.stim_freq} Hz")
+                   f"Condition: {condition} - {self.percentage} Amp: {self.current_amplitude:.2f} mA - {self.stim_freq} Hz")
 
         self.info_lbl.config(text=txt)
 
