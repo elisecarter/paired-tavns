@@ -22,7 +22,6 @@ class DataCollector:
     def __init__(self):
         self.event_data = []
         self.pupil_data = []
-        self.pupil_event_data = []
         self.bitalino_data = []
         self.bitalino_channels = {}
         self.running = True
@@ -30,7 +29,6 @@ class DataCollector:
         # self.ni_daq_lock = threading.Lock()
         self.event_lock = threading.Lock()
         self.pupil_lock = threading.Lock()
-        self.pupil_event_lock = threading.Lock()
         self.bitalino_lock = threading.Lock()
 
 
@@ -47,7 +45,7 @@ class StreamRecorder:
 
     def _get_channel_labels(self):
         labels = []
-        description = self.stream_info.desc()
+        description = self.inlet.info().desc()
         channel = description.child("channels").first_child()
         while not channel.empty():
             label = channel.child_value("label")
@@ -63,7 +61,7 @@ class StreamRecorder:
         return labels
 
     def _write_header(self):
-        header = ["corrected_lsl_timestamp", "lsl_timestamp"] + self._get_channel_labels()
+        header = ["timestamp", "offset"] + self._get_channel_labels()
         self.csv_writer.writerow(header)
 
     def record_chunk(self):
@@ -79,7 +77,7 @@ class StreamRecorder:
             rows = []
             for sample, ts in zip(samples, timestamps):
                 corrected_ts = ts + offset
-                row = [corrected_ts, ts] + list(sample)
+                row = [corrected_ts, offset] + list(sample)
                 rows.append(row)
             
             self.csv_writer.writerows(rows)
@@ -210,6 +208,11 @@ def setup_lsl_outlets():
         channel_format=cf_string,
         source_id='event12345'
     )
+    desc = event_info.desc()
+    # create a channels container then a channel child so StreamRecorder can find labels
+    channels = desc.append_child("channels")
+    channel = channels.append_child("channel")
+    channel.append_child_value("label", "Event")
     event_outlet = StreamOutlet(event_info)
 
     return event_outlet
@@ -341,12 +344,8 @@ def start_lsl_collection_threads(self):
 
     if self.record_pupil:
         # Setup and start thread for pupil gaze data
-        pupil_file_path = os.path.join(self.data_dir, f"{datetime_str}_pupil_gaze.csv")
+        pupil_file_path = os.path.join(self.data_dir, f"{datetime_str}_pupil.csv")
         threads.append(threading.Thread(target=record_lsl_stream, args=('name', 'Neon Companion_Neon Gaze', pupil_file_path, self.data_collector)))
-        
-        # Setup and start thread for pupil events data
-        pupil_events_file_path = os.path.join(self.data_dir, f"{datetime_str}_pupil_events.csv")
-        threads.append(threading.Thread(target=record_lsl_stream, args=('name', 'Neon Companion_Neon Events', pupil_events_file_path, self.data_collector)))
 
     if self.record_bitalino:
         bitalino_file_path = os.path.join(self.data_dir, f"{datetime_str}_bitalino.csv")
