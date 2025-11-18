@@ -91,7 +91,7 @@ class SessionGUI(tk.Tk):
         row += 1
 
         # Neon IP Address
-        self.neon_ip_var = tk.StringVar(value="10.168.182.81")  # Default IP for Neon device
+        self.neon_ip_var = tk.StringVar(value="192.168.142.208")  # Default IP for Neon device
         self.neon_ip_entry = ttk.Entry(frame, textvariable=self.neon_ip_var)
         self.neon_ip_entry.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         self.neon_ip_entry.state(["disabled"])
