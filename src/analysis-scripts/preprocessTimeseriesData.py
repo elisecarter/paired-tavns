@@ -28,6 +28,33 @@ def preprocess_pupil_data(pupil_df):
     if pupil_df is None or pupil_df.empty:
         return None
     
+    pupil_df = pupil_df.rename(columns=lambda c: c.strip() if isinstance(c, str) else c)
+    timestamp_col = next((c for c in pupil_df.columns if isinstance(c, str) and 'timestamp' in c.lower()), pupil_df.columns[0])
+    drop_names = {'offset', 'nseq', 'frame', 'index'}
+    candidate_cols = [c for c in pupil_df.columns if c != timestamp_col and not (isinstance(c, str) and c.lower() in drop_names)]
+    if len(candidate_cols) == 16 and all(isinstance(c, str) and c.lower().startswith('channel_') for c in candidate_cols):
+        # Assume pupil data is in channel_3 (and possibly channel_10)
+        pupil_cols = ['channel_3', 'channel_10']
+    else:
+        pupil_cols = [c for c in candidate_cols if isinstance(c, str) and 'pupil' in c.lower()]
+    if not candidate_cols:
+        raise ValueError("No pupil diameter columns detected in pupil dataframe")
+    
+    # Check for multiple pupil channels
+    
+    if len(pupil_cols) > 1:
+        # Average multiple pupil channels
+        pupil_data = pupil_df[pupil_cols].apply(pd.to_numeric, errors='coerce').mean(axis=1)
+        pupil_df = pupil_df[[timestamp_col]].copy()
+        pupil_df['Pupil_Diameter'] = pupil_data
+    else:
+        value_col = pupil_cols[0]
+        pupil_df = pupil_df[[timestamp_col, value_col]].copy()
+        pupil_df = pupil_df.rename(columns={value_col: 'Pupil_Diameter'})
+    
+    pupil_df['Timestamp'] = pd.to_numeric(pupil_df[timestamp_col], errors='coerce')
+    pupil_df['Pupil_Diameter'] = pd.to_numeric(pupil_df['Pupil_Diameter'], errors='coerce')
+
     # sort timestamps
     pupil_df = pupil_df.drop_duplicates(subset='Timestamp', keep='first') 
     pupil_df = pupil_df.sort_values(by='Timestamp').reset_index(drop=True)
