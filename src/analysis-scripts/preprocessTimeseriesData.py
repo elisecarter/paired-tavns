@@ -348,13 +348,65 @@ def preprocess_ino_data(daq_df):
 
     return preprocessed_data
 
+def normalize_event_dataframe(events_df):
+    if events_df is None or events_df.empty:
+        return None
+
+    events_df = events_df.rename(columns=lambda c: c.strip() if isinstance(c, str) else c)
+
+    if {'Timestamp', 'Event'}.issubset(events_df.columns):
+        events_df['Timestamp'] = pd.to_numeric(events_df['Timestamp'], errors='coerce')
+        events_df = events_df.dropna(subset=['Timestamp'])
+        return events_df[['Timestamp', 'Event']].reset_index(drop=True)
+
+    ts_col = next((c for c in events_df.columns if isinstance(c, str) and 'timestamp' in c.lower()), None)
+    if ts_col is None:
+        return None
+
+    skip_cols = {ts_col}
+    skip_cols.update(c for c in events_df.columns if isinstance(c, str) and c.lower() in {'offset', 'nseq'})
+    data_cols = [c for c in events_df.columns if c not in skip_cols]
+    if not data_cols:
+        return None
+
+    timestamps = pd.to_numeric(events_df[ts_col], errors='coerce')
+    rows = []
+    for col in data_cols:
+        series = events_df[col]
+        if series.isnull().all():
+            continue
+        mask = series.notna()
+        if pd.api.types.is_numeric_dtype(series):
+            mask &= series != 0
+        elif series.dtype == bool:
+            mask &= series
+        else:
+            mask &= series.astype(str).str.strip().ne('')
+        if not mask.any():
+            continue
+        active = pd.DataFrame({'Timestamp': timestamps[mask], 'Value': series[mask]})
+        for _, rec in active.iterrows():
+            val = rec['Value']
+            if isinstance(val, str):
+                val = val.strip()
+            event_label = val if isinstance(val, str) and val else col
+            rows.append({'Timestamp': rec['Timestamp'], 'Event': event_label})
+
+    if not rows:
+        return None
+
+    normalized = pd.DataFrame(rows)
+    normalized['Timestamp'] = pd.to_numeric(normalized['Timestamp'], errors='coerce')
+    normalized = normalized.dropna(subset=['Timestamp'])
+    normalized = normalized.sort_values(by='Timestamp').reset_index(drop=True)
+    return normalized
+
 def preprocess_subject_block(path, block_str, block_cfg):
     # Preprocess data
     print(f"Processing block: {block_str}")
     
     pupil_df = None
     ino_df = None
-    channel_info = None
     pupil_data = None
     ino_data = None
     block_data = pd.DataFrame()
@@ -364,7 +416,7 @@ def preprocess_subject_block(path, block_str, block_cfg):
         print(f"Events file not found: {events_file}")
         events = None
     else:
-        events = pd.read_csv(events_file)
+        events = normalize_event_dataframe(pd.read_csv(events_file))
     
     if block_cfg.get('record_pupil', False):
         pupil_file = os.path.join(path, f"{block_str}_pupil.csv")
@@ -380,19 +432,14 @@ def preprocess_subject_block(path, block_str, block_cfg):
 
     if block_cfg.get('record_bitalino', False):
         ino_file = os.path.join(path, f"{block_str}_bitalino.csv")
-        channel_file = os.path.join(path, f"{block_str}_channels.json")
         if not os.path.exists(ino_file):
             print(f"Bitalino data file not found: {ino_file}")
 
         else:
             ino_df = pd.read_csv(ino_file)
-            if not os.path.exists(channel_file):
-                print(f"Channel file not found: {channel_file}")
-            else:
-                channel_info = json.load(open(channel_file, 'r'))
-                # preprocess ino data
-                ino_df['block_path'] = path
-                ino_data = preprocess_daq_data(ino_df, channel_info)
+            # preprocess ino data
+            ino_df['block_path'] = path
+            ino_data = preprocess_ino_data(ino_df)
 
     
         
@@ -414,16 +461,13 @@ def preprocess_subject_block(path, block_str, block_cfg):
                 block_data[channel['signal_type']] = np.interp(tq, t, x)
                 block_data['Timestamps'] = tq
                 
-    if block_data is not None: # find indices of events in block_data timestamps
-        if events is not None:
-            for index, event in events.iterrows():
-                if event['Timestamp'] < block_data['Timestamps'].iloc[0] or event['Timestamp'] > block_data['Timestamps'].iloc[-1]:
-                    continue
-                # Find the closest timestamp in block_data
-                event_time = event['Timestamp']
-                closest_index = (block_data['Timestamps'] - event_time).abs().idxmin()
-                # Add event information to block_data
-                block_data.loc[closest_index, 'Event'] = event['Event']
+    if block_data is not None and events is not None:
+        for _, event in events.iterrows():
+            if event['Timestamp'] < block_data['Timestamps'].iloc[0] or event['Timestamp'] > block_data['Timestamps'].iloc[-1]:
+                continue
+            event_time = event['Timestamp']
+            closest_index = (block_data['Timestamps'] - event_time).abs().idxmin()
+            block_data.loc[closest_index, 'Event'] = event['Event']
 
     return block_data
 
