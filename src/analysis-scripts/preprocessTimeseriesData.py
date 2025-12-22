@@ -112,41 +112,77 @@ def preprocess_pupil_data(pupil_df):
          
     return preprocessed_data
 
-def preprocess_daq_data(daq_df, channel_info):
-    """Parse channel names from channel file and filter data based on signal type."""
+def preprocess_ino_data(daq_df):
+    """Infer channel types from dataframe columns and filter data based on signal type."""
     if daq_df is None or daq_df.empty:
         return None
 
-    dt = 0.001
-
-    # Create mapping from column number to signal type (first entry of the list)
-    channel_types = {int(ch): info[0] for ch, info in channel_info.items()}
-    # iterate through columns in daq_df['Sample'] and process based on channel type
     preprocessed_data = []
-    for col, signal_type in channel_types.items():
 
-        if 'nSeq' in signal_type:
-            unit = ''
-                # pull column data from daq_df['Sample']
-            dat = daq_df['Sample'].apply(lambda x: x.strip("[]").split(',')[col-1] if isinstance(x, str) else None)
-            dat = pd.to_numeric(dat)
-            nSeq = dat.values
-            # Vectorized timestamp calculation
-            diff = np.diff(nSeq, prepend=nSeq[0])
-            diff[nSeq == 0] += 16
-            t = np.round(daq_df['Timestamp'][0] + np.cumsum(diff * dt), 3)
-            daq_df['Timestamp'] = t
-            dat = nSeq
-            
-    # Then process all other signal types
-    for col, signal_type in channel_types.items():
-        if 'nSeq' in signal_type:
-            continue  # already processed above
-        dat = daq_df['Sample'].apply(lambda x: x.strip("[]").split(',')[col-1] if isinstance(x, str) else None)
-        dat = pd.to_numeric(dat)
-        t = daq_df['Timestamp']
-    
-        if 'ECG' in signal_type:
+    # Identify metadata columns so we only process actual signal channels.
+    timestamp_col = next((c for c in daq_df.columns if c.lower() == 'timestamp'), None)
+    if timestamp_col is None:
+        raise ValueError("DAQ dataframe requires a 'Timestamp' column")
+
+    meta_cols = {timestamp_col}
+    offset_col = next((c for c in daq_df.columns if c.lower() == 'offset'), None)
+    if offset_col:
+        meta_cols.add(offset_col)
+    if 'block_path' in daq_df.columns:
+        meta_cols.add('block_path')
+
+    dt = 0.001
+    timestamps = pd.to_numeric(daq_df[timestamp_col], errors='coerce')
+
+    nseq_cols = [c for c in daq_df.columns if 'nseq' in c.lower()]
+    if nseq_cols:
+        meta_cols.update(nseq_cols)
+        nSeq = pd.to_numeric(daq_df[nseq_cols[0]], errors='coerce').ffill().bfill().values
+        diff = np.diff(nSeq, prepend=nSeq[0])
+        wrap_mask = diff <= 0
+        diff[wrap_mask] += 16
+        start_candidates = timestamps.dropna()
+        start_time = start_candidates.iloc[0] if not start_candidates.empty else 0.0
+        timestamps = np.round(start_time + np.cumsum(diff * dt), 3)
+        daq_df[timestamp_col] = timestamps
+    else:
+        timestamps = timestamps.values
+
+    if len(timestamps) > 1:
+        dt_est = np.median(np.diff(timestamps))
+        if np.isfinite(dt_est) and dt_est > 0:
+            dt = float(dt_est)
+
+    base_t = pd.Series(timestamps, dtype=float)
+
+    data_cols = [c for c in daq_df.columns if c not in meta_cols and not c.lower().startswith('unnamed')]
+
+    def _infer_type(col_name):
+        name = col_name.lower()
+        if 'ecg' in name:
+            return 'ECG'
+        if 'eda' in name or 'gsr' in name:
+            return 'EDA'
+        if 'resp' in name or 'breath' in name:
+            return 'RESP'
+        if 'nseq' in name:
+            return 'NSEQ'
+        return col_name
+
+    for col in data_cols:
+        channel_hint = _infer_type(col)
+        if channel_hint == 'NSEQ':
+            continue
+
+        dat = pd.to_numeric(daq_df[col], errors='coerce')
+        if dat.isnull().all():
+            continue
+        dat = dat.interpolate().bfill().ffill()
+        t = base_t
+        unit = 'a.u.'
+        signal_type = channel_hint
+
+        if channel_hint == 'ECG':
             signal_type = 'IBI'
             unit = 's'
             
@@ -238,14 +274,14 @@ def preprocess_daq_data(daq_df, channel_info):
             
                         
             preprocessed_data.append({
-            "signal_type": "SD_RR",
-            "unit": "ms",
-            "Timestamps": d["Time"].tolist(),
-            "data": sd_rr.tolist() if hasattr(sd_rr, "tolist") else list(sd_rr)
+                "signal_type": "SD_RR",
+                "unit": "ms",
+                "Timestamps": d["Time"].tolist(),
+                "data": sd_rr.tolist() if hasattr(sd_rr, "tolist") else list(sd_rr)
             })
             # pass
 
-        elif 'EDA' in signal_type:
+        elif channel_hint == 'EDA':
             signal_type = 'SCR'
             unit = 'μS'
             eda = dat
@@ -279,7 +315,7 @@ def preprocess_daq_data(daq_df, channel_info):
             # dat = filtered
             pass
 
-        elif 'RESP' in signal_type:
+        elif channel_hint == 'RESP':
 
             signal_type = 'RESP'
             unit = 'BPM'
@@ -309,8 +345,6 @@ def preprocess_daq_data(daq_df, channel_info):
             "Timestamps": t,
             "data": dat.tolist() if hasattr(dat, "tolist") else list(dat)
         })
-        
-        t = daq_df['Timestamp']  # use the original timestamps for the next channel
 
     return preprocessed_data
 
