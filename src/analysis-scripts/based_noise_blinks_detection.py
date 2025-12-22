@@ -59,7 +59,7 @@ def detect_blinks(pupil_size, sampling_freq):
 		blinks              : [dictionary] {"blink_onset", "blink_offset"} containing numpy array/list of blink onset and offset indices
 	"""
 	sampling_interval = 1000 // sampling_freq
-	concat_gap_interval = 100
+	concat_gap_interval = 0.1 // sampling_interval  # in samples (20*5ms = 100ms for 200Hz data)
 
 	blink_onset = []
 	blink_offset = []
@@ -67,7 +67,7 @@ def detect_blinks(pupil_size, sampling_freq):
 	pupil_size = np.asarray(pupil_size)
  
 	#### ADDED THIS PART BECAUSE PUPIL LABS DOES NOT AUTOMATICALLY ZERO OUT BLINKS
-	pupil_smooth = pd.Series(pupil_size).rolling(window=3, center=True, min_periods=1).mean()
+	pupil_smooth = smooth(pupil_size, 3)
 	pupil_diff = np.diff(pupil_smooth, prepend=0)  # Prepend 0 to maintain the same length as pupil_size
 	threshold = np.std(pupil_diff) * 2  # Adjust sensitivity
 	pupil_size[np.abs(pupil_diff) > threshold] = 0
