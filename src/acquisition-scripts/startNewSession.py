@@ -201,8 +201,10 @@ class SessionGUI(tk.Tk):
         cfg.update({
             "ID": pid,
             "session_dir": self.session_dir,
+            "calibration_results": self.calibration_results,
             "date": self.date_str,
             "order": order,
+            "calibration_frequency": calib_freqs,
             "trigger_stim": self.trigger_stim_var.get(),
             "record_pupil": self.record_pupil_var.get(),
             "record_bitalino": self.record_bitalino_var.get(),
@@ -393,9 +395,10 @@ class SessionGUI(tk.Tk):
                         "current_mA",
                         "block_no",
                         "stim_freq",
-                        "rating",
-                        "percent_PT"
+                        "percent_PT",
+                        "rating"
                     ]
+                    
                     for key in keys_to_remove:
                         cfg.pop(key, None)
                     with open(self.config_path, "w") as f: # type: ignore
@@ -419,12 +422,14 @@ class SessionGUI(tk.Tk):
             self.condition = "practice"
             self.current_amplitude = 0.0
             self.percentage  = "0%"
+            self.rating = 0
         elif not cfg['trigger_stim']:
             txt = (f"Block {self.block_idx + 1}/{self.num_blocks} - "
                    f"Condition: {condition}")
             self.current_amplitude = 0.0
             self.stim_freq = 0
             self.percentage = "0%"
+            self.rating = 0
         else:
             if condition not in calib_data:
                 messagebox.showerror("Error", f"No calibration results found for condition '{condition}'.")
@@ -433,8 +438,8 @@ class SessionGUI(tk.Tk):
             self.condition = condition
             
             # Get calibration data for both conditions to find a commonly tolerated level
-            tavns_data = self.calibration_results.get("taVNS", {})
-            sham_data = self.calibration_results.get("sham", {})
+            tavns_data = calib_data.get("taVNS", {})
+            sham_data = calib_data.get("sham", {})
 
             tavns_ratings = tavns_data.get("perceived rating", {})
             tavns_currents = tavns_data.get("calculated_currents", {})
@@ -496,8 +501,8 @@ class SessionGUI(tk.Tk):
                     "current_mA": self.current_amplitude,
                     "stim_freq": self.stim_freq,
                     "percent_PT": self.percentage,
-                    "rating": self.rating,
-                    "block_no": self.block_idx + 1
+                    "block_no": self.block_idx + 1,
+                    "rating": self.rating
                 })
                 f.seek(0)
                 f.truncate()
