@@ -49,7 +49,7 @@ class Calibrator:
         Returns a dict of values.
         """
         percentages = [0.75, 1.00, 1.25, 1.50, 1.75, 2.00]
-        values = {f"{int(p*100)}%": round(threshold * p, 3) for p in percentages}
+        values = {f"{int(p*100)}%": round(threshold * p, 2) for p in percentages}
         return values
 
     def run(self):

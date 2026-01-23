@@ -421,6 +421,7 @@ class SessionGUI(tk.Tk):
             txt = "Practice Block - TURN OFF STIMULATOR."
             self.condition = "practice"
             self.current_amplitude = 0.0
+            self.stim_freq = 0
             self.percentage  = "0%"
             self.rating = 0
         elif not cfg['trigger_stim']:
