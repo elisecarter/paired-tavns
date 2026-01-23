@@ -203,7 +203,6 @@ class SessionGUI(tk.Tk):
             "session_dir": self.session_dir,
             "date": self.date_str,
             "order": order,
-            "calibration_frequency": calib_freqs,
             "trigger_stim": self.trigger_stim_var.get(),
             "record_pupil": self.record_pupil_var.get(),
             "record_bitalino": self.record_bitalino_var.get(),
@@ -247,7 +246,7 @@ class SessionGUI(tk.Tk):
         
         # Select Stimulation Frequency
         ttk.Label(frm, text="Stimulation Frequency (Hz):").grid(row=1, column=0, sticky="w", pady=(0, 10))
-        freq_options = list([30, 100])
+        freq_options = ["30", "100"]
         if cfg['trigger_stim']:
             self.stim_freq_var.set(freq_options[0])
         else:
@@ -392,11 +391,10 @@ class SessionGUI(tk.Tk):
                     keys_to_remove = [
                         "condition",
                         "current_mA",
-                        "percentage of PT",
                         "block_no",
                         "stim_freq",
-                        "percent_PT",
-                        "calibration_frequency"
+                        "rating",
+                        "percent_PT"
                     ]
                     for key in keys_to_remove:
                         cfg.pop(key, None)
@@ -483,6 +481,7 @@ class SessionGUI(tk.Tk):
             
             self.percentage = best_percentage
             self.current_amplitude = current_values.get(best_percentage, 0.0)
+            self.rating = current_calib_data.get("perceived rating", {}).get(best_percentage, 0)
 
             txt = (f"Block {self.block_idx + 1}/{self.num_blocks} - "
                    f"Condition: {condition} - {self.percentage} Amp: {self.current_amplitude:.2f} mA - {self.stim_freq} Hz")
@@ -497,6 +496,7 @@ class SessionGUI(tk.Tk):
                     "current_mA": self.current_amplitude,
                     "stim_freq": self.stim_freq,
                     "percent_PT": self.percentage,
+                    "rating": self.rating,
                     "block_no": self.block_idx + 1
                 })
                 f.seek(0)
