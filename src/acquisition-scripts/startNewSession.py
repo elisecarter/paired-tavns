@@ -232,7 +232,6 @@ class SessionGUI(tk.Tk):
         new_freq = simpledialog.askstring("Calibration Frequency", "Enter new calibration frequency (Hz):")
 
         # Overwrite the calibration frequency selection and run calibration
-        # Here we simply run calibration with the new value.
         self.run_calibration([new_freq])
 
     def _build_selections_frame(self, cfg):
@@ -417,27 +416,28 @@ class SessionGUI(tk.Tk):
         else:
             condition = "unknown"
 
-        if self.block_idx < 0:
+        if self.block_idx < 0: # practice block: no stimulation
             txt = "Practice Block - TURN OFF STIMULATOR."
             self.condition = "practice"
             self.current_amplitude = 0.0
             self.stim_freq = 0
             self.percentage  = "0%"
             self.rating = 0
-        elif not cfg['trigger_stim']:
+        elif not cfg['trigger_stim']: # no stimulation
             txt = (f"Block {self.block_idx + 1}/{self.num_blocks} - "
                    f"Condition: {condition}")
             self.current_amplitude = 0.0
             self.stim_freq = 0
             self.percentage = "0%"
             self.rating = 0
-        else:
+        else: # stimulation block
             if condition not in calib_data:
                 messagebox.showerror("Error", f"No calibration results found for condition '{condition}'.")
                 return
 
             self.condition = condition
-            
+            self.stim_freq = float(self.stim_freq_var.get().strip())
+           
             # Get calibration data for both conditions to find a commonly tolerated level
             tavns_data = calib_data.get("taVNS", {})
             sham_data = calib_data.get("sham", {})
