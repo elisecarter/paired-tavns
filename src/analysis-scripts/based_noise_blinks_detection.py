@@ -58,8 +58,10 @@ def detect_blinks(pupil_size, sampling_freq):
 	Output:
 		blinks              : [dictionary] {"blink_onset", "blink_offset"} containing numpy array/list of blink onset and offset indices
 	"""
-	sampling_interval = 1000 // sampling_freq
-	concat_gap_interval = 0.1 // sampling_interval  # in samples (20*5ms = 100ms for 200Hz data)
+	sampling_interval = 1000 // sampling_freq # in ms
+	
+	# minimum number of samples between blinks to consider them separate
+	concat_gap_interval = 200 // sampling_interval  # 200ms -> number of samples
 
 	blink_onset = []
 	blink_offset = []
@@ -100,8 +102,8 @@ def detect_blinks(pupil_size, sampling_freq):
 	if (len(blink_offset) < len(blink_onset)) and pupil_size[-1] == 0:
 		blink_offset = np.hstack((blink_offset, len(pupil_size) - 1))
 
-	# Smoothing the data
-	ms_4_smoothing = 100
+	# Smoothing the data: want to remove noise while keeping blink trend
+	ms_4_smoothing = 250
 	samples2smooth = ms_4_smoothing // sampling_interval
 	smooth_pupil_size = np.array(smooth(pupil_size, samples2smooth), dtype='float32')
  
@@ -143,7 +145,7 @@ def detect_blinks(pupil_size, sampling_freq):
 	blinks["blink_onset"] = (temp[:, 0]) # * sampling_interval) + sampling_interval
 	blinks["blink_offset"] = (temp[:, 1]) # * sampling_interval) + sampling_interval
  
-	# # Plot raw and smoothed pupil data with blink onsets and offsets
+	# Plot raw and smoothed pupil data with blink onsets and offsets
 	# plt.figure(figsize=(12, 6))
 	# plt.plot(pupil_size, label='Raw Pupil Data', color='blue', linewidth=3)
 	# plt.plot(smooth_pupil_size, label='Smoothed Pupil Data', color='orange', linewidth=2)
