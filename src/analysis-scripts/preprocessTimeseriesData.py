@@ -41,7 +41,6 @@ def preprocess_pupil_data(pupil_df):
         raise ValueError("No pupil diameter columns detected in pupil dataframe")
     
     # Check for multiple pupil channels
-    
     if len(pupil_cols) > 1:
         # Average multiple pupil channels
         pupil_data = pupil_df[pupil_cols].apply(pd.to_numeric, errors='coerce').mean(axis=1)
@@ -59,46 +58,33 @@ def preprocess_pupil_data(pupil_df):
     pupil_df = pupil_df.drop_duplicates(subset='Timestamp', keep='first') 
     pupil_df = pupil_df.sort_values(by='Timestamp').reset_index(drop=True)
     
-    dt = np.diff(pupil_df['Timestamp'])
-    avg_dt = round(np.mean(dt), 3)  # average time difference between timestamps
-    # plot raw pupil data
-    # plt.figure(figsize=(12, 6))
-    # plt.plot(pupil_df['Timestamp'], pupil_df['Pupil_Diameter'], label='raw pupil')
-    
-    # Detect blink artifacts
-    blinks = detect_blinks(pupil_df['Pupil_Diameter'], sampling_freq=1/avg_dt)
-    for onset, offset in zip(blinks['blink_onset'], blinks['blink_offset']):
-        pupil_df.loc[int(onset):int(offset), 'Pupil_Diameter'] = np.nan
-    pupil_df['interpolated'] = pupil_df['Pupil_Diameter'].isnull()
-    
-    # Interpolate through blinks
-    x = pupil_df['Timestamp'].values
-    y = pupil_df['Pupil_Diameter'].values
-    nans = np.isnan(y)
-    pupil_df['Pupil_Diameter'] = np.interp(x, x[~nans], y[~nans]) #seems more natural than PchipInterpolator
+    pupil_diam = pupil_df['Pupil_Diameter'].values
+    t = pupil_df['Timestamp'].values
     
     # resample to uniform 200 Hz
-    t_start = x[0]
-    t_end = x[-1]
+    t_start = t[0]
+    t_end = t[-1]
     dt = 1/200  # target sampling interval for 200 Hz
     uniform_t = np.arange(t_start, t_end, dt).round(3)
-    interp_y = np.interp(uniform_t, x, pupil_df['Pupil_Diameter'].values)
-    pupil_df = pd.DataFrame({
-        'Timestamp': uniform_t,
-        'Pupil_Diameter': interp_y
-    })
+    resampled_pupil = np.interp(uniform_t, t, pupil_diam)
     
-    # plot interpolated pupil data
-    # plt.plot(pupil_df['Timestamp'], pupil_df['Pupil_Diameter'], label='interp pupil')
+    # Detect blink artifacts
+    blinks = detect_blinks(resampled_pupil, sampling_freq=1/dt)
+    for onset, offset in zip(blinks['blink_onset'], blinks['blink_offset']):
+        resampled_pupil[int(onset):int(offset)] = np.nan
+
 
     # filter pupil diameter using a low-pass filter
+    interp_pupil = pd.Series(resampled_pupil).interpolate().bfill().ffill()
     filt = signal.butter(4, 6, fs=1/dt, btype='low', output='sos')
-    pupil_df['Pupil_Diameter'] = signal.sosfiltfilt(filt, pupil_df['Pupil_Diameter'])
+    pupil_filt = signal.sosfiltfilt(filt, interp_pupil)
+    pupil_filt[np.isnan(resampled_pupil)] = np.nan  # restore NaNs at blink locations
     
     
-    
-    # plot filtered pupil data
-    # plt.plot(pupil_df['Timestamp'], pupil_df['Pupil_Diameter'], label='filtered')
+    # plot raw and filtered pupil data
+    # plt.figure(figsize=(12, 6))
+    # plt.plot(t, pupil_diam, label='raw pupil')
+    # plt.plot(uniform_t, pupil_filt, label='filtered')
     # plt.show()
 
     if not pupil_df.empty:
@@ -106,13 +92,14 @@ def preprocess_pupil_data(pupil_df):
             "signal_type": "PUPILDIAM",
             "unit": "mm",
             "Fs": 1/dt,
-            "timestamps": pupil_df['Timestamp'].tolist(),
-            "data": pupil_df['Pupil_Diameter'].tolist()
+            "timestamps": uniform_t.tolist(),
+            "data": pupil_filt.tolist()
         }
          
     return preprocessed_data
 
 def preprocess_ino_data(daq_df):
+    global manual_correction
     """Infer channel types from dataframe columns and filter data based on signal type."""
     if daq_df is None or daq_df.empty:
         return None
@@ -230,7 +217,6 @@ def preprocess_ino_data(daq_df):
             # launch editor
             block_path = daq_df['block_path'][0]
             peaks_path = os.path.join(block_path, "corrected_peaks.npy")
-            manual_correction = True
             if manual_correction:
                 corrected_peaks = launch_peak_editor(t.values, ecg.values, corrected_peaks, block_path)
             elif os.path.exists(peaks_path):
@@ -416,7 +402,11 @@ def preprocess_subject_block(path, block_str, block_cfg):
         print(f"Events file not found: {events_file}")
         events = None
     else:
-        events = normalize_event_dataframe(pd.read_csv(events_file))
+        try:
+            events = normalize_event_dataframe(pd.read_csv(events_file))
+        except pd.errors.EmptyDataError:
+            print(f"Events file is empty: {events_file}")
+            events = None
     
     if block_cfg.get('record_pupil', False):
         pupil_file = os.path.join(path, f"{block_str}_pupil.csv")
@@ -434,34 +424,39 @@ def preprocess_subject_block(path, block_str, block_cfg):
         ino_file = os.path.join(path, f"{block_str}_bitalino.csv")
         if not os.path.exists(ino_file):
             print(f"Bitalino data file not found: {ino_file}")
-
         else:
             ino_df = pd.read_csv(ino_file)
             # preprocess ino data
             ino_df['block_path'] = path
             ino_data = preprocess_ino_data(ino_df)
 
-    
-        
     # if pupil data is available, resample ino data to pupil timestamps
     if ino_data is not None:
         for i, channel in enumerate(ino_data):
             if channel is None or len(channel['data']) == 0:
                 continue
             if 'Timestamps' in channel:
-                t = channel['Timestamps']
-                x = channel['data']
-                if not block_data.empty:
+                t = np.asarray(channel['Timestamps'], dtype=float)
+                x = np.asarray(channel['data'], dtype=float)
+                if t.size < 2 or x.size < 2:
+                    continue
+
+                if (not block_data.empty) and ('Timestamps' in block_data.columns):
                     # Resample to pupil timestamps (200Hz)
-                    tq = block_data['Timestamps']
+                    tq = np.asarray(block_data['Timestamps'], dtype=float)
                 else:
                     # resample to 200Hz
                     tq = np.arange(t[0], t[-1], 0.005).round(3)  # 200 Hz
-                    
+
                 block_data[channel['signal_type']] = np.interp(tq, t, x)
                 block_data['Timestamps'] = tq
                 
-    if block_data is not None and events is not None:
+    if (
+        block_data is not None
+        and not block_data.empty
+        and 'Timestamps' in block_data.columns
+        and events is not None
+    ):
         for _, event in events.iterrows():
             if event['Timestamp'] < block_data['Timestamps'].iloc[0] or event['Timestamp'] > block_data['Timestamps'].iloc[-1]:
                 continue
@@ -752,6 +747,9 @@ def main():
     end_date = args.end_date
     force = args.force
     dry_run = args.dry_run
+    
+    global manual_correction
+    manual_correction = False  # set to True to enable ECG peak editor
 
     for subject in os.listdir(data_dir):
         subject_path = os.path.join(data_dir, subject)
