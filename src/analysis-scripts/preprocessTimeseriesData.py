@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 import json
 import numpy as np
@@ -6,6 +7,9 @@ import scipy.signal as signal
 import argparse
 import sys
 import traceback
+import re
+import importlib
+from datetime import datetime
 from based_noise_blinks_detection import detect_blinks
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
@@ -90,6 +94,92 @@ def _build_channel_payload(signal_type, unit, timestamps, data, qa=None):
     return payload
 
 def preprocess_pupil_data(pupil_df):
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.append(str(BASE_DIR / "real-time-blink-detection"))
+
+PUPIL_LABS_BACKUP_ROOT = Path(r"Z:\Elise\pupil labs backup")
+_NEON_DATETIME_DIR_CACHE = {}
+
+
+def _parse_datetime_from_text(text):
+    patterns = [
+        (r"(\d{8})[T_\-]?(\d{6})", "%Y%m%d%H%M%S"),
+        (r"(\d{4})[-_](\d{2})[-_](\d{2})[ T_\-]?(\d{2})[-_:]?(\d{2})[-_:]?(\d{2})", "%Y%m%d%H%M%S"),
+        (r"(\d{8})", "%Y%m%d"),
+    ]
+
+    for pattern, fmt in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        token = "".join(match.groups())
+        try:
+            return datetime.strptime(token, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _get_datetime_directories(root_dir):
+    root_dir = Path(root_dir)
+    cache_key = str(root_dir.resolve()) if root_dir.exists() else str(root_dir)
+    if cache_key in _NEON_DATETIME_DIR_CACHE:
+        return _NEON_DATETIME_DIR_CACHE[cache_key]
+
+    candidates = []
+    if not root_dir.exists():
+        _NEON_DATETIME_DIR_CACHE[cache_key] = candidates
+        return candidates
+
+    for current_root, dir_names, _ in os.walk(root_dir):
+        for dir_name in dir_names:
+            dt = _parse_datetime_from_text(dir_name)
+            if dt is None:
+                continue
+            full_path = Path(current_root) / dir_name
+            candidates.append((dt, full_path))
+
+    _NEON_DATETIME_DIR_CACHE[cache_key] = candidates
+    return candidates
+
+
+def find_closest_neon_recording_path(reference_path, backup_root=PUPIL_LABS_BACKUP_ROOT):
+    reference_dt = _parse_datetime_from_text(str(reference_path))
+    if reference_dt is None:
+        return None
+
+    candidates = _get_datetime_directories(backup_root)
+    if not candidates:
+        return None
+
+    same_day_candidates = [
+        (dt, path)
+        for dt, path in candidates
+        if dt.date() == reference_dt.date()
+    ]
+    if not same_day_candidates:
+        print(
+            f"No same-day Neon directory found for {reference_dt.date().isoformat()} under {backup_root}"
+        )
+        return None
+
+    closest_dt, closest_path = min(
+        same_day_candidates,
+        key=lambda item: abs((item[0] - reference_dt).total_seconds()),
+    )
+    print(f"Matched Neon recording directory: {closest_path} ({closest_dt.isoformat()})")
+    return str(closest_path)
+
+
+def _load_blink_modules():
+    try:
+        helper_module = importlib.import_module("blink_detector.helper")
+        detector_module = importlib.import_module("blink_detector")
+        return helper_module.preprocess_recording, detector_module.blink_detection_pipeline
+    except Exception:
+        return None, None
+
+def preprocess_pupil_data(pupil_df, neon_recording_path=None):
     """
     Smooth pupil diameter and interpolate missing values due to blinks.
 
@@ -547,8 +637,11 @@ def preprocess_subject_block(path, block_str, block_cfg):
             print(f"Pupil data file not found: {pupil_file}")
         else:
             pupil_df = pd.read_csv(pupil_file)
+            neon_recording_path = find_closest_neon_recording_path(path)
+            if neon_recording_path is None:
+                print(f"No datetime directory match found under {PUPIL_LABS_BACKUP_ROOT}; using fallback blink detection")
             # Correct blink artifacts and filter
-            pupil_data = preprocess_pupil_data(pupil_df)
+            pupil_data = preprocess_pupil_data(pupil_df, neon_recording_path=neon_recording_path)
             if pupil_data is not None:
                 block_data['Timestamps'] = pupil_data['timestamps']
                 block_data['pupilDiameter'] = pupil_data['data']
