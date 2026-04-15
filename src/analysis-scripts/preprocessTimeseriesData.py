@@ -11,6 +11,84 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 from pointprocess_py import compute_full_regression
 
+EVENT_ALIGNMENT_TOLERANCE_SEC = 0.025
+TARGET_FS_HZ = 200
+TARGET_DT_SEC = 1.0 / TARGET_FS_HZ
+MAX_ALLOWED_MISSINGNESS = {
+    'pupilDiameter': 0.40,
+    'IBI': 0.30,
+    'SD_RR': 0.40,
+    'SCR': 0.35,
+    'RESP': 0.35,
+    'default': 0.40,
+}
+
+
+def _timestamp_quality_metrics(timestamps):
+    arr = np.asarray(timestamps, dtype=float)
+    finite = np.isfinite(arr)
+    valid = arr[finite]
+    if valid.size < 2:
+        return {
+            'n_samples': int(arr.size),
+            'n_valid': int(valid.size),
+            'n_invalid': int(arr.size - valid.size),
+            'n_duplicates': 0,
+            'n_nonmonotonic_steps': 0,
+            'dt_median': np.nan,
+            'dt_sd': np.nan,
+            'duration_sec': np.nan,
+        }
+
+    diffs = np.diff(valid)
+    return {
+        'n_samples': int(arr.size),
+        'n_valid': int(valid.size),
+        'n_invalid': int(arr.size - valid.size),
+        'n_duplicates': int(np.sum(diffs == 0)),
+        'n_nonmonotonic_steps': int(np.sum(diffs <= 0)),
+        'dt_median': float(np.nanmedian(diffs)),
+        'dt_sd': float(np.nanstd(diffs)),
+        'duration_sec': float(valid[-1] - valid[0]),
+    }
+
+
+def _missing_threshold_for_signal(signal_name):
+    return MAX_ALLOWED_MISSINGNESS.get(signal_name, MAX_ALLOWED_MISSINGNESS['default'])
+
+
+def _to_serializable(value):
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {k: _to_serializable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_serializable(v) for v in value]
+    return value
+
+
+def write_integrity_report(block_path, block_str, report):
+    report_path = os.path.join(block_path, f"{block_str}_integrityReport.json")
+    with open(report_path, 'w') as f:
+        json.dump(_to_serializable(report), f, indent=2)
+    return report_path
+
+
+def _build_channel_payload(signal_type, unit, timestamps, data, qa=None):
+    payload = {
+        "signal_type": signal_type,
+        "unit": unit,
+        "Timestamps": timestamps.tolist() if hasattr(timestamps, "tolist") else list(timestamps),
+        "data": data.tolist() if hasattr(data, "tolist") else list(data),
+    }
+    if qa is not None:
+        payload["qa"] = qa
+    return payload
+
 def preprocess_pupil_data(pupil_df):
     """
     Smooth pupil diameter and interpolate missing values due to blinks.
@@ -27,22 +105,29 @@ def preprocess_pupil_data(pupil_df):
     """
     if pupil_df is None or pupil_df.empty:
         return None
+
+    qa = {
+        'source': 'pupil',
+        'warnings': [],
+    }
     
     pupil_df = pupil_df.rename(columns=lambda c: c.strip() if isinstance(c, str) else c)
     timestamp_col = next((c for c in pupil_df.columns if isinstance(c, str) and 'timestamp' in c.lower()), pupil_df.columns[0])
     drop_names = {'offset', 'nseq', 'frame', 'index'}
     candidate_cols = [c for c in pupil_df.columns if c != timestamp_col and not (isinstance(c, str) and c.lower() in drop_names)]
+
+    # Heuristic: some exports contain generic channel_* columns; pupil is expected on channel_3/channel_10.
     if len(candidate_cols) == 16 and all(isinstance(c, str) and c.lower().startswith('channel_') for c in candidate_cols):
-        # Assume pupil data is in channel_3 (and possibly channel_10)
-        pupil_cols = ['channel_3', 'channel_10']
+        pupil_cols = [c for c in ['channel_3', 'channel_10'] if c in pupil_df.columns]
     else:
         pupil_cols = [c for c in candidate_cols if isinstance(c, str) and 'pupil' in c.lower()]
     if not candidate_cols:
         raise ValueError("No pupil diameter columns detected in pupil dataframe")
-    
-    # Check for multiple pupil channels
+    if not pupil_cols:
+        raise ValueError("No pupil channel matched expected names (e.g. pupil* or channel_3/channel_10)")
+
+    # If binocular channels are present, collapse to one trace by averaging.
     if len(pupil_cols) > 1:
-        # Average multiple pupil channels
         pupil_data = pupil_df[pupil_cols].apply(pd.to_numeric, errors='coerce').mean(axis=1)
         pupil_df = pupil_df[[timestamp_col]].copy()
         pupil_df['Pupil_Diameter'] = pupil_data
@@ -50,37 +135,42 @@ def preprocess_pupil_data(pupil_df):
         value_col = pupil_cols[0]
         pupil_df = pupil_df[[timestamp_col, value_col]].copy()
         pupil_df = pupil_df.rename(columns={value_col: 'Pupil_Diameter'})
-    
+
+    # Normalize numeric dtypes, then enforce monotonic unique timestamps.
     pupil_df['Timestamp'] = pd.to_numeric(pupil_df[timestamp_col], errors='coerce')
     pupil_df['Pupil_Diameter'] = pd.to_numeric(pupil_df['Pupil_Diameter'], errors='coerce')
-
-    # sort timestamps
-    pupil_df = pupil_df.drop_duplicates(subset='Timestamp', keep='first') 
+    qa['input_timestamps'] = _timestamp_quality_metrics(pupil_df['Timestamp'].values)
+    pupil_df = pupil_df.dropna(subset=['Timestamp']).drop_duplicates(subset='Timestamp', keep='first')
     pupil_df = pupil_df.sort_values(by='Timestamp').reset_index(drop=True)
-    
+    pupil_df = pupil_df.dropna(subset=['Pupil_Diameter'])
+    if pupil_df.shape[0] < 2:
+        raise ValueError("Pupil data has fewer than 2 valid timestamped samples after cleaning")
+
     pupil_diam = pupil_df['Pupil_Diameter'].values
     t = pupil_df['Timestamp'].values
-    
-    # resample to uniform 200 Hz
+
+    # Resample to fixed 200 Hz grid for downstream alignment with other signals.
     t_start = t[0]
     t_end = t[-1]
-    dt = 1/200  # target sampling interval for 200 Hz
+    dt = TARGET_DT_SEC
     uniform_t = np.arange(t_start, t_end, dt).round(3)
+    if uniform_t.size < 2:
+        raise ValueError("Pupil resampling grid is empty or too short")
     resampled_pupil = np.interp(uniform_t, t, pupil_diam)
-    
-    # Detect blink artifacts
-    blinks = detect_blinks(resampled_pupil, sampling_freq=1/dt)
+
+    # Mark blink segments as NaN so they can be interpolated for filtering but retained as missing in output.
+    blinks = detect_blinks(resampled_pupil, sampling_freq=1 / dt)
     for onset, offset in zip(blinks['blink_onset'], blinks['blink_offset']):
-        resampled_pupil[int(onset):int(offset)] = np.nan
+        onset_i = max(0, int(onset))
+        offset_i = min(resampled_pupil.size, int(offset))
+        resampled_pupil[onset_i:offset_i] = np.nan
 
-
-    # filter pupil diameter using a low-pass filter
+    # Interpolate gaps for stable low-pass filtering, then restore blink NaNs.
     interp_pupil = pd.Series(resampled_pupil).interpolate().bfill().ffill()
-    filt = signal.butter(4, 6, fs=1/dt, btype='low', output='sos')
+    filt = signal.butter(4, 6, fs=1 / dt, btype='low', output='sos')
     pupil_filt = signal.sosfiltfilt(filt, interp_pupil)
-    pupil_filt[np.isnan(resampled_pupil)] = np.nan  # restore NaNs at blink locations
-    
-    
+    pupil_filt[np.isnan(resampled_pupil)] = np.nan
+
     # plot raw and filtered pupil data
     # plt.figure(figsize=(12, 6))
     # plt.plot(t, pupil_diam, label='raw pupil')
@@ -93,7 +183,13 @@ def preprocess_pupil_data(pupil_df):
             "unit": "mm",
             "Fs": 1/dt,
             "timestamps": uniform_t.tolist(),
-            "data": pupil_filt.tolist()
+            "data": pupil_filt.tolist(),
+            "qa": {
+                **qa,
+                'resampled_timestamps': _timestamp_quality_metrics(uniform_t),
+                'blink_missing_fraction': float(np.mean(np.isnan(resampled_pupil))),
+                'output_missing_fraction': float(np.mean(np.isnan(pupil_filt))),
+            }
         }
          
     return preprocessed_data
@@ -120,7 +216,15 @@ def preprocess_ino_data(daq_df):
 
     dt = 0.001
     timestamps = pd.to_numeric(daq_df[timestamp_col], errors='coerce')
+    valid_ts = timestamps.notna()
+    if not valid_ts.any():
+        raise ValueError("DAQ timestamps are all invalid or missing")
+    dropped_ts = int((~valid_ts).sum())
+    if dropped_ts > 0:
+        daq_df = daq_df.loc[valid_ts].reset_index(drop=True)
+        timestamps = pd.to_numeric(daq_df[timestamp_col], errors='coerce')
 
+    # If nSeq exists, reconstruct a robust sample clock (handles counter wraparound).
     nseq_cols = [c for c in daq_df.columns if 'nseq' in c.lower()]
     if nseq_cols:
         meta_cols.update(nseq_cols)
@@ -135,12 +239,14 @@ def preprocess_ino_data(daq_df):
     else:
         timestamps = timestamps.values
 
+    # Refine dt from observed spacing when possible.
     if len(timestamps) > 1:
         dt_est = np.median(np.diff(timestamps))
         if np.isfinite(dt_est) and dt_est > 0:
             dt = float(dt_est)
 
     base_t = pd.Series(timestamps, dtype=float)
+    daq_ts_metrics = _timestamp_quality_metrics(base_t.values)
 
     data_cols = [c for c in daq_df.columns if c not in meta_cols and not c.lower().startswith('unnamed')]
 
@@ -162,6 +268,7 @@ def preprocess_ino_data(daq_df):
             continue
 
         dat = pd.to_numeric(daq_df[col], errors='coerce')
+        missing_before = float(dat.isna().mean())
         if dat.isnull().all():
             continue
         dat = dat.interpolate().bfill().ffill()
@@ -172,34 +279,28 @@ def preprocess_ino_data(daq_df):
         if channel_hint == 'ECG':
             signal_type = 'IBI'
             unit = 's'
-            
-            fs = 1/dt
-            window_size = 0.03  # seconds
-            ecg = pd.Series(dat, dtype=float)
-            
-            # bandpass filter ECG
-            filt = signal.butter(4, [0.5, 30], fs=1/dt, btype='band', output='sos')
-            vFilt = signal.sosfiltfilt(filt, ecg)
-            
-            # take derivative and square
-            dV = np.gradient(vFilt, dt)  # compute derivative using numpy gradient
-            dV2 = dV ** 2  # square the derivative
 
-            # moving-window integration
+            fs = 1 / dt
+            window_size = 0.03
+            ecg = pd.Series(dat, dtype=float)
+
+            # ECG preprocessing: bandpass -> derivative^2 -> moving integration (Pan–Tompkins style).
+            filt = signal.butter(4, [0.5, 30], fs=1 / dt, btype='band', output='sos')
+            vFilt = signal.sosfiltfilt(filt, ecg)
+            dV = np.gradient(vFilt, dt)
+            dV2 = dV ** 2
             N = int(window_size / dt)
             kernel = np.ones(N) / N
             vInt = np.convolve(dV2, kernel, mode='same')
-            
-            # find peaks in integrated signal
-            from scipy.stats import iqr
-            mpd = int(0.2 * fs)  # minimum peak distance in samples
-            mph = np.mean(vInt) + 1 * np.std(vInt)  # minimum peak height
 
+            # Peak candidates on integrated signal, then local-max correction on raw ECG.
+            mpd = int(0.2 * fs)
+            mph = np.mean(vInt) + 1 * np.std(vInt)
             peaks, _ = signal.find_peaks(vInt, distance=mpd, height=mph)
-                    
+
             corrected_peaks = []
-            window_dur = 0.01 # seconds
-            half_window = int(window_dur / dt)  # number of samples in the window
+            window_dur = 0.01
+            half_window = int(window_dur / dt)
             for peak in peaks:
                 if peak < half_window or peak > len(ecg) - half_window - 1:
                     continue
@@ -208,26 +309,22 @@ def preprocess_ino_data(daq_df):
                 corrected_peaks.append(corrected_peak)
             corrected_peaks = pd.Series(corrected_peaks).astype(int)
 
-            # plt.figure(figsize=(12, 6))
-            # plt.plot(t, ecg, label=f'raw ecg')
-            # plt.scatter(beatTimes, ecg[nn_peaks], color='r', marker='x', label='peaks')
-            # plt.legend()
-            # plt.show()
-
-            # launch editor
+            # Optional manual correction; otherwise reuse saved corrections if present.
             block_path = daq_df['block_path'][0]
             peaks_path = os.path.join(block_path, "corrected_peaks.npy")
             if manual_correction:
                 corrected_peaks = launch_peak_editor(t.values, ecg.values, corrected_peaks, block_path)
             elif os.path.exists(peaks_path):
                 corrected_peaks = np.load(peaks_path).tolist()
+
             nn_peaks = corrected_peaks
-            beatTimes = t.iloc[nn_peaks].values
-            ibi = np.diff(beatTimes)  # inter-beat intervals in milliseconds
+            beatTimes = np.asarray(t.iloc[nn_peaks], dtype=float)
+            if beatTimes.size < 3:
+                continue
+            ibi = np.diff(beatTimes)
             dat = ibi
             t = beatTimes[1:]
-            
-            
+
             # Compute the instantaneous HRV series with the right-edge window.
             res = compute_full_regression(
                 events=beatTimes,
@@ -259,12 +356,20 @@ def preprocess_ino_data(daq_df):
             # plt.show()
             
                         
-            preprocessed_data.append({
-                "signal_type": "SD_RR",
-                "unit": "ms",
-                "Timestamps": d["Time"].tolist(),
-                "data": sd_rr.tolist() if hasattr(sd_rr, "tolist") else list(sd_rr)
-            })
+            preprocessed_data.append(
+                _build_channel_payload(
+                    signal_type="SD_RR",
+                    unit="ms",
+                    timestamps=d["Time"],
+                    data=sd_rr,
+                    qa={
+                        'source_channel': col,
+                        'source_missing_fraction': missing_before,
+                        'daq_timestamps': daq_ts_metrics,
+                        'dropped_invalid_timestamps': dropped_ts,
+                    }
+                )
+            )
             # pass
 
         elif channel_hint == 'EDA':
@@ -325,12 +430,20 @@ def preprocess_ino_data(daq_df):
             t = peak_times[1:]
             pass
 
-        preprocessed_data.append({
-            "signal_type": signal_type,
-            "unit": unit,
-            "Timestamps": t,
-            "data": dat.tolist() if hasattr(dat, "tolist") else list(dat)
-        })
+        preprocessed_data.append(
+            _build_channel_payload(
+                signal_type=signal_type,
+                unit=unit,
+                timestamps=t,
+                data=dat,
+                qa={
+                    'source_channel': col,
+                    'source_missing_fraction': missing_before,
+                    'daq_timestamps': daq_ts_metrics,
+                    'dropped_invalid_timestamps': dropped_ts,
+                }
+            )
+        )
 
     return preprocessed_data
 
@@ -396,6 +509,26 @@ def preprocess_subject_block(path, block_str, block_cfg):
     pupil_data = None
     ino_data = None
     block_data = pd.DataFrame()
+    report = {
+        'block': block_str,
+        'path': path,
+        'policy': {
+            'target_fs_hz': TARGET_FS_HZ,
+            'event_alignment_tolerance_sec': EVENT_ALIGNMENT_TOLERANCE_SEC,
+            'max_allowed_missingness': MAX_ALLOWED_MISSINGNESS,
+        },
+        'signals': {},
+        'event_alignment': {
+            'total_events': 0,
+            'aligned_events': 0,
+            'unaligned_events': 0,
+            'collisions': 0,
+            'residuals_sec': [],
+            'unaligned_details': [],
+        },
+        'fail_reasons': [],
+        'status': 'pass',
+    }
 
     events_file = os.path.join(path, f"{block_str}_events.csv")
     if not os.path.exists(events_file):
@@ -419,6 +552,8 @@ def preprocess_subject_block(path, block_str, block_cfg):
             if pupil_data is not None:
                 block_data['Timestamps'] = pupil_data['timestamps']
                 block_data['pupilDiameter'] = pupil_data['data']
+                if 'qa' in pupil_data:
+                    report['signals']['pupilDiameter'] = pupil_data['qa']
 
     if block_cfg.get('record_bitalino', False):
         ino_file = os.path.join(path, f"{block_str}_bitalino.csv")
@@ -446,10 +581,12 @@ def preprocess_subject_block(path, block_str, block_cfg):
                     tq = np.asarray(block_data['Timestamps'], dtype=float)
                 else:
                     # resample to 200Hz
-                    tq = np.arange(t[0], t[-1], 0.005).round(3)  # 200 Hz
+                    tq = np.arange(t[0], t[-1], TARGET_DT_SEC).round(3)  # 200 Hz
 
                 block_data[channel['signal_type']] = np.interp(tq, t, x)
                 block_data['Timestamps'] = tq
+                if 'qa' in channel:
+                    report['signals'][channel['signal_type']] = channel['qa']
                 
     if (
         block_data is not None
@@ -457,14 +594,171 @@ def preprocess_subject_block(path, block_str, block_cfg):
         and 'Timestamps' in block_data.columns
         and events is not None
     ):
-        for _, event in events.iterrows():
-            if event['Timestamp'] < block_data['Timestamps'].iloc[0] or event['Timestamp'] > block_data['Timestamps'].iloc[-1]:
-                continue
-            event_time = event['Timestamp']
-            closest_index = (block_data['Timestamps'] - event_time).abs().idxmin()
-            block_data.loc[closest_index, 'Event'] = event['Event']
+        report['event_alignment']['total_events'] = int(events.shape[0])
+        block_data['Event'] = pd.Series([None] * len(block_data), index=block_data.index, dtype='object')
+        timestamps = np.asarray(block_data['Timestamps'], dtype=float)
+        event_times = pd.to_numeric(events['Timestamp'], errors='coerce').to_numpy(dtype=float)
+        event_labels = events['Event'].astype(str).to_numpy()
 
-    return block_data
+        left_bound = timestamps[0]
+        right_bound = timestamps[-1]
+        in_range = (event_times >= left_bound) & (event_times <= right_bound)
+
+        for event_time, event_label in zip(event_times[~in_range], event_labels[~in_range]):
+            report['event_alignment']['unaligned_details'].append({
+                'timestamp': float(event_time),
+                'event': str(event_label),
+                'reason': 'out_of_range',
+            })
+
+        valid_times = event_times[in_range]
+        valid_labels = event_labels[in_range]
+        if valid_times.size:
+            right_idx = np.searchsorted(timestamps, valid_times, side='left')
+            right_idx = np.clip(right_idx, 0, len(timestamps) - 1)
+            left_idx = np.clip(right_idx - 1, 0, len(timestamps) - 1)
+
+            right_diff = np.abs(timestamps[right_idx] - valid_times)
+            left_diff = np.abs(valid_times - timestamps[left_idx])
+            use_left = left_diff <= right_diff
+            nearest_idx = np.where(use_left, left_idx, right_idx)
+            residuals = np.where(use_left, left_diff, right_diff)
+
+            for event_time, event_label, idx, residual in zip(valid_times, valid_labels, nearest_idx, residuals):
+                if float(residual) > EVENT_ALIGNMENT_TOLERANCE_SEC:
+                    report['event_alignment']['unaligned_details'].append({
+                        'timestamp': float(event_time),
+                        'event': str(event_label),
+                        'reason': 'outside_tolerance',
+                        'nearest_residual_sec': float(residual),
+                    })
+                    continue
+
+                existing_event = block_data.at[idx, 'Event']
+                if pd.notna(existing_event):
+                    report['event_alignment']['collisions'] += 1
+                    block_data.at[idx, 'Event'] = f"{existing_event}|{event_label}"
+                else:
+                    block_data.at[idx, 'Event'] = event_label
+                report['event_alignment']['aligned_events'] += 1
+                report['event_alignment']['residuals_sec'].append(float(residual))
+
+    report['event_alignment']['unaligned_events'] = len(report['event_alignment']['unaligned_details'])
+    residuals = np.asarray(report['event_alignment']['residuals_sec'], dtype=float)
+    report['event_alignment']['residual_summary'] = {
+        'mean_sec': float(np.nanmean(residuals)) if residuals.size else np.nan,
+        'max_sec': float(np.nanmax(residuals)) if residuals.size else np.nan,
+    }
+
+    if block_data is not None and not block_data.empty and 'Timestamps' in block_data.columns:
+        report['timeline'] = _timestamp_quality_metrics(block_data['Timestamps'].values)
+        for sig in [c for c in block_data.columns if c not in ['Timestamps', 'Event', 'nSeq']]:
+            series = pd.to_numeric(block_data[sig], errors='coerce')
+            missing_frac = float(series.isna().mean())
+            threshold = _missing_threshold_for_signal(sig)
+            report['signals'].setdefault(sig, {})
+            report['signals'][sig]['output_missing_fraction'] = missing_frac
+            report['signals'][sig]['max_allowed_missing_fraction'] = threshold
+            if missing_frac > threshold:
+                report['fail_reasons'].append(
+                    f"{sig} missingness {missing_frac:.3f} exceeds threshold {threshold:.3f}"
+                )
+    else:
+        report['fail_reasons'].append('No usable timeseries samples produced')
+
+    if report['event_alignment']['unaligned_events'] > 0:
+        report['fail_reasons'].append(
+            f"{report['event_alignment']['unaligned_events']} event(s) were not aligned"
+        )
+
+    if report['fail_reasons']:
+        report['status'] = 'fail'
+
+    return block_data, report
+
+
+def launch_block_review_gui(block_data, block_str, block_path, qa_report=None):
+    """
+    Interactive block-level QC review.
+    Returns one of: 'accept', 'reject', 'quit'.
+    Controls:
+    - Buttons: Accept / Reject / Quit
+    - Keyboard: a / r / q
+    """
+    if block_data is None or block_data.empty or 'Timestamps' not in block_data.columns:
+        return 'reject'
+
+    plot_cols = [col for col in block_data.columns if col not in ['Timestamps', 'Event', 'nSeq']]
+    if len(plot_cols) == 0:
+        return 'reject'
+
+    fig, axes = plt.subplots(len(plot_cols), 1, figsize=(14, max(6, 2.2 * len(plot_cols))), sharex=True)
+    if len(plot_cols) == 1:
+        axes = [axes]
+
+    t = pd.to_numeric(block_data['Timestamps'], errors='coerce')
+    t = np.asarray(t, dtype=float)
+    status = qa_report.get('status', 'unknown') if isinstance(qa_report, dict) else 'unknown'
+    title = f"Review block: {block_str} | QA status: {status}"
+    fig.suptitle(title)
+
+    for ax, col in zip(axes, plot_cols):
+        y = pd.to_numeric(block_data[col], errors='coerce')
+        y = np.asarray(y, dtype=float)
+        ax.plot(t, y, label=col, linewidth=1.0)
+        if 'Event' in block_data.columns:
+            event_times = block_data.loc[block_data['Event'].notnull(), 'Timestamps']
+            for et in event_times:
+                ax.axvline(x=float(et), color='r', linestyle='--', alpha=0.35)
+        ax.set_ylabel(col)
+        ax.grid(alpha=0.2)
+
+    axes[-1].set_xlabel('Time (s)')
+    help_text = (
+        f"Block path: {block_path}\n"
+        "Review controls: [A]ccept  [R]eject  [Q]uit"
+    )
+    fig.text(0.01, 0.01, help_text, fontsize=9, va='bottom')
+
+    plt.subplots_adjust(bottom=0.12, top=0.92)
+    decision = {'value': None}
+
+    accept_ax = plt.axes((0.72, 0.02, 0.08, 0.05))
+    reject_ax = plt.axes((0.81, 0.02, 0.08, 0.05))
+    quit_ax = plt.axes((0.90, 0.02, 0.08, 0.05))
+    accept_btn = Button(accept_ax, 'Accept')
+    reject_btn = Button(reject_ax, 'Reject')
+    quit_btn = Button(quit_ax, 'Quit')
+
+    def _finish(value):
+        decision['value'] = value
+        plt.close(fig)
+
+    def on_accept(event):
+        _finish('accept')
+
+    def on_reject(event):
+        _finish('reject')
+
+    def on_quit(event):
+        _finish('quit')
+
+    def on_key(event):
+        key = (event.key or '').lower()
+        if key == 'a':
+            _finish('accept')
+        elif key == 'r':
+            _finish('reject')
+        elif key == 'q':
+            _finish('quit')
+
+    accept_btn.on_clicked(on_accept)
+    reject_btn.on_clicked(on_reject)
+    quit_btn.on_clicked(on_quit)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+
+    plt.show()
+    return decision['value'] or 'reject'
 
 def launch_peak_editor(t, ecg, peaks, block_path):
     """
@@ -740,6 +1034,7 @@ def main():
     parser.add_argument('--force', action='store_true', help='Reprocess blocks even if _tsData.csv already exists')
     parser.add_argument('--dry-run', action='store_true', help='List blocks that would be processed without writing output')
     parser.add_argument('--subject', help='Optional: only process this subject folder')
+    parser.add_argument('--review-gui', action='store_true', help='Open an interactive GUI to accept/reject each processed block before saving outputs')
     args = parser.parse_args()
 
     data_dir = args.data_dir
@@ -747,6 +1042,7 @@ def main():
     end_date = args.end_date
     force = args.force
     dry_run = args.dry_run
+    review_gui = args.review_gui
     
     global manual_correction
     manual_correction = False  # set to True to enable ECG peak editor
@@ -787,7 +1083,27 @@ def main():
                     if dry_run:
                         print(f"DRY RUN: would process {block_path}")
                         continue
-                    block_data = preprocess_subject_block(block_path, block, block_cfg)
+                    block_data, qa_report = preprocess_subject_block(block_path, block, block_cfg)
+
+                    if review_gui and block_data is not None and not block_data.empty:
+                        review_decision = launch_block_review_gui(block_data, block, block_path, qa_report)
+                        qa_report['manual_review'] = {
+                            'enabled': True,
+                            'decision': review_decision,
+                        }
+                        if review_decision == 'quit':
+                            report_path = write_integrity_report(block_path, block, qa_report)
+                            print(f"Wrote integrity report: {report_path}")
+                            print("Review stopped by user.")
+                            return
+                        if review_decision == 'reject':
+                            qa_report['status'] = 'fail'
+                            qa_report.setdefault('fail_reasons', [])
+                            qa_report['fail_reasons'].append('Rejected during manual GUI review')
+                            report_path = write_integrity_report(block_path, block, qa_report)
+                            print(f"Rejected block during review. Wrote integrity report: {report_path}")
+                            continue
+
                     if block_data is not None and not block_data.empty:
                         # subtract t0 from timestamps
                         t0 = block_data['Timestamps'].iloc[0]
@@ -815,6 +1131,9 @@ def main():
                         plt.savefig(os.path.join(block_path, f"{block}_tsData.png"))
                         plt.close()
 
+                    report_path = write_integrity_report(block_path, block, qa_report)
+                    print(f"Wrote integrity report: {report_path}")
+
                 except Exception as e:
                     tb = sys.exc_info()[2]
                     stack = traceback.extract_tb(tb)
@@ -822,8 +1141,25 @@ def main():
                     line_no = stack[-1].lineno if stack else '<unknown>'
                     print(f"Error processing {block_path}: {e} (line {line_no} in {func_name})")
                     print(traceback.format_exc())
+                    failure_report = {
+                        'block': block,
+                        'path': block_path,
+                        'status': 'error',
+                        'fail_reasons': [str(e)],
+                        'error': {
+                            'function': func_name,
+                            'line': line_no,
+                        },
+                    }
+                    try:
+                        write_integrity_report(block_path, block, failure_report)
+                    except Exception:
+                        pass
 
     print(f"Data processing complete. Data directory: {data_dir}")
 
 if __name__ == "__main__":
     main()
+    
+#Run block-by-block visual review with:
+# /Users/elise/Desktop/paired-tavns/.venv/bin/python src/analysis-scripts/preprocessTimeseriesData.py --review-gui
